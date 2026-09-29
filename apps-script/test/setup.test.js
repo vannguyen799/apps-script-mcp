@@ -137,7 +137,7 @@ test('setup pair success: same response shape as code pairing, proof verified wi
   assert.equal(env.sig, null);
   const body = parseBody(env);
   assert.deepEqual(Object.keys(body).sort(), ['ok', 'result']);
-  assert.deepEqual(Object.keys(body.result).sort(), ['account', 'proof', 'scriptId', 'scriptName']);
+  assert.deepEqual(Object.keys(body.result).sort(), ['account', 'allowlist', 'proof', 'scriptId', 'scriptName']);
   assert.equal(body.ok, true);
   assert.equal(body.result.account, 'owner@example.com');
   const proof = crypto.createHmac('sha256', Buffer.from(secret, 'utf8'))
@@ -391,7 +391,7 @@ test('code pair and setup pair results carry scriptId and scriptName (null), pin
   const secret = newSecret();
   const ts = sb.clock.now;
   const bySetup = code(sb, buildSetupPairRequest({ instanceId, secret, ts, token: setup.token }));
-  assert.deepEqual(Object.keys(bySetup.result).sort(), ['account', 'proof', 'scriptId', 'scriptName']);
+  assert.deepEqual(Object.keys(bySetup.result).sort(), ['account', 'allowlist', 'proof', 'scriptId', 'scriptName']);
   assert.equal(bySetup.result.scriptId, 'SCRIPT-ID-XYZ');
   assert.equal(bySetup.result.scriptName, null);
   // the proof string is unchanged by the extra fields
@@ -406,4 +406,94 @@ test('scriptId defaults to a mock id and is null if ScriptApp.getScriptId throws
   const sb2 = createSandbox();
   sb2.ctx.ScriptApp.getScriptId = () => { throw new Error('nope'); };
   assert.equal(sb2.pairClient().call('ping').result.scriptId, null);
+});
+
+// ---------------------------------------------------------------- setup spreadsheets (section 12)
+
+const sid = (c) => c.repeat(30);
+const entry = (id, access = 'read') => ({ id, access });
+const allowlist = (sb) => JSON.parse(sb.props.get('asmcp.spreadsheets') || '[]');
+
+test('setup pair adds the listed spreadsheets, skips ones that cannot be opened, and reports both', () => {
+  const { sb, setup } = setupSandbox();
+  sb.setSetup({ ...setup, spreadsheets: [entry(sid('a')), entry(sid('b'), 'write'), entry(sid('c'))] });
+  sb.addSpreadsheet({ id: sid('a'), name: 'Sales' });
+  sb.addSpreadsheet({ id: sid('b'), name: 'Costs' });
+  const r = code(sb, setupReq(sb, setup));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.result.allowlist, { added: 2, failed: [sid('c')] });
+  assert.deepEqual(allowlist(sb), [
+    { id: sid('a'), name: 'Sales', alias: 'Sales', access: 'read' },
+    { id: sid('b'), name: 'Costs', alias: 'Costs', access: 'write' }
+  ]);
+});
+
+test('alias collisions get a numeric suffix; existing entries are left untouched', () => {
+  const { sb, setup } = setupSandbox();
+  sb.addSpreadsheet({ id: sid('e'), name: 'Old', alias: 'Data', access: 'write' });
+  sb.addSpreadsheet({ id: sid('a'), name: 'Data' });
+  sb.addSpreadsheet({ id: sid('b'), name: 'data' });
+  sb.addSpreadsheet({ id: sid('c'), name: 'Other' });
+  // sid('e') is already listed (with a different access): kept as is, not reopened
+  sb.setSetup({ ...setup, spreadsheets: [entry(sid('a')), entry(sid('b')), entry(sid('e'), 'read'), entry(sid('c')), entry(sid('a'))] });
+  const r = code(sb, setupReq(sb, setup));
+  assert.deepEqual(r.result.allowlist, { added: 3, failed: [] });
+  const list = allowlist(sb);
+  assert.deepEqual(list[0], { id: sid('e'), name: 'Old', alias: 'Data', access: 'write' });
+  assert.deepEqual(list.slice(1).map((e) => e.alias), ['Data 2', 'data 3', 'Other']);
+  assert.equal(list.length, 4);
+  assert.equal(sb.sheetsFake.opened.includes(sid('e')), false);
+});
+
+test('the list is applied once per token: a replayed setup pair does not apply again', () => {
+  const { sb, setup } = setupSandbox();
+  sb.setSetup({ ...setup, spreadsheets: [entry(sid('a'))] });
+  sb.addSpreadsheet({ id: sid('a'), name: 'Sales' });
+  const req = setupReq(sb, setup);
+  assert.equal(code(sb, req).result.allowlist.added, 1);
+  sb.props.set("asmcp.spreadsheets", "[]");
+  assert.equal(code(sb, req).error.code, 'PAIRING_INVALID');
+  assert.deepEqual(allowlist(sb), []);
+});
+
+test('a LIMIT_EXCEEDED setup pair applies nothing', () => {
+  const { sb, setup } = setupSandbox();
+  for (let i = 0; i < 20; i++) sb.pairClient('ABCD-2345');
+  sb.setSetup({ ...setup, spreadsheets: [entry(sid('a'))] });
+  sb.addSpreadsheet({ id: sid('a'), name: 'Sales' });
+  assert.equal(code(sb, setupReq(sb, setup)).error.code, 'LIMIT_EXCEEDED');
+  assert.deepEqual(allowlist(sb), []);
+});
+
+test('a code pair never touches the allowlist and carries no allowlist field', () => {
+  const sb = createSandbox({ setup: { server: 'local', token: newSecret(), expiresAt: 1e15, spreadsheets: [entry(sid('a'))] } });
+  sb.addSpreadsheet({ id: sid('a'), name: 'Sales' });
+  sb.enterPairingCode('ABCD-2345');
+  const r = code(sb, buildPairRequest({ instanceId: crypto.randomUUID(), pairingCode: 'ABCD2345', secret: newSecret(), ts: sb.clock.now }));
+  assert.equal(r.ok, true);
+  assert.equal('allowlist' in r.result, false);
+  assert.deepEqual(allowlist(sb), []);
+});
+
+test('a setup block without spreadsheets, or with junk entries, still pairs', () => {
+  for (const spreadsheets of [undefined, 'x', [null, 5, { id: 1 }, { id: sid('a'), access: 'admin' }]]) {
+    const { sb, setup } = setupSandbox();
+    sb.setSetup({ ...setup, spreadsheets });
+    const r = code(sb, setupReq(sb, setup));
+    assert.equal(r.ok, true);
+    assert.equal(r.result.allowlist.added, 0);
+    assert.deepEqual(allowlist(sb), []);
+  }
+});
+
+test('at most 50 entries are considered', () => {
+  const { sb, setup } = setupSandbox();
+  const ids = [];
+  for (let i = 0; i < 52; i++) {
+    const id = `s${i}`.padEnd(30, 'z');
+    ids.push(id);
+    sb.addSpreadsheet({ id, name: `Sheet ${i}` });
+  }
+  sb.setSetup({ ...setup, spreadsheets: ids.map((id) => entry(id)) });
+  assert.equal(code(sb, setupReq(sb, setup)).result.allowlist.added, 50);
 });

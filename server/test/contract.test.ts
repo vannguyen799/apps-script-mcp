@@ -12,7 +12,7 @@ import type { FetchLike } from "../src/adapters/apps-script/transport.js";
 import { GatewayError } from "../src/core/sheets/gateway.js";
 import { SheetsService } from "../src/core/sheets/sheets.service.js";
 import { newSecret } from "../src/adapters/apps-script/signing.js";
-import { setupLineCount } from "../src/connection/setup-bundle.js";
+import { parseSpreadsheetLines, setupLineCount } from "../src/connection/setup-bundle.js";
 import type { Harness } from "./helpers.js";
 import { fullOAuth, makeHarness } from "./helpers.js";
 
@@ -242,6 +242,58 @@ describe("section 9 against the real Apps Script code", () => {
     await h.registry.submitUrl(p2.id, h.ownerId, url, "setup");
     await h.registry.pollOnce();
     expect(h.registry.getPending(p2.id, h.ownerId)).toMatchObject({ state: "failed" }); // proof is for p2's token, not the block's
+  });
+
+  it("wizard: spreadsheets pasted before install are on the allowlist right after pairing (no admin step), and the PAT works", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const url = "https://script.google.com/macros/s/WIZARD/exec";
+    const sb = newScript(url, "SCRIPT-W");
+    const okId = "1" + "a".repeat(43);
+    const missingId = "1" + "b".repeat(43);
+    sb.addSpreadsheet({ id: okId, name: "Budget", sheets: { S: [["x", 7]] } }); // exists, NOT on the allowlist yet
+    const ids = parseSpreadsheetLines(`https://docs.google.com/spreadsheets/d/${okId}/edit#gid=0\n\n${missingId}\n${okId}`);
+
+    const p = await h.registry.startPending(h.ownerId, { spreadsheets: ids, write: true });
+    const block = setupBlockOf(h.registry.personalizedBundle(p.id, h.ownerId));
+    expect(block.spreadsheets).toEqual([{ id: okId, access: "write" }, { id: missingId, access: "write" }]);
+    sb.setSetup(block);
+    await h.registry.submitUrl(p.id, h.ownerId, url, "setup");
+    await h.registry.pollOnce();
+
+    const done = h.registry.getPending(p.id, h.ownerId)!;
+    expect(done).toMatchObject({ state: "connected", updated: false, allowlist: { added: 1, failed: [missingId] } });
+    expect(done.pat).toMatch(/^asmcp_pat_/);
+    expect(h.registry.getPending(p.id, h.ownerId)!.pat).toBeNull(); // once
+    expect(h.pats.list(h.ownerId)).toHaveLength(1);
+
+    const rt = h.registry.resolve(done.connection!.id, h.ownerId)!;
+    expect((await rt.service.listSpreadsheets()).map((x) => x.alias)).toEqual(["Budget"]);
+    expect((await rt.service.readRange("Budget", "S!A1:B1")).values).toEqual([["x", "7"]]);
+    await rt.service.writeRange("Budget", "S!D1", [["ok"]]);
+
+    // The auto-created PAT reaches the same script over MCP.
+    const c = await mcp(h.publicUrl, done.pat!);
+    const r = await c.callTool({ name: "read_range", arguments: { spreadsheet: "Budget", range: "S!A1:B1" } });
+    expect(r.isError, text(r)).toBeFalsy();
+    await c.close();
+  });
+
+  it("wizard: re-pairing the same script does not create another PAT, and an older script (no allowlist field) is tolerated", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const url = "https://script.google.com/macros/s/WIZARD2/exec";
+    const sb = newScript(url, "SCRIPT-W2");
+    const wizard = async () => {
+      const p = await h!.registry.startPending(h!.ownerId, { spreadsheets: [], write: false });
+      sb.setSetup(setupBlockOf(h!.registry.personalizedBundle(p.id, h!.ownerId)));
+      await h!.registry.submitUrl(p.id, h!.ownerId, url, "setup");
+      await h!.registry.pollOnce();
+      return h!.registry.getPending(p.id, h!.ownerId)!;
+    };
+    const first = await wizard();
+    expect(first.pat).toMatch(/^asmcp_pat_/);
+    const second = await wizard();
+    expect(second).toMatchObject({ state: "connected", updated: true, pat: null });
+    expect(h.pats.list(h.ownerId)).toHaveLength(1);
   });
 
   it("code pairing with an already-installed script still works through the registry", async () => {

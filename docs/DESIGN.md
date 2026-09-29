@@ -485,3 +485,29 @@ imports it; only `main.ts` wires it.
 - **Installers:** they pass `TUNNEL`, `CLOUDFLARE_TUNNEL_TOKEN`, `NGROK_AUTHTOKEN`, `NGROK_DOMAIN` and
   `PUBLIC_BASE_URL` through when they are set in the user's shell. They then print the public URL, polling the container
   log for `Public URL:` for up to 30 s.
+
+## 12. Minimal setup wizard
+
+Goal: login → paste sheet links → install script → copy the Claude command. No other page is needed.
+
+- **`/account` with zero connections** opens a 2-step wizard. It stays reachable later via "Thêm Apps Script".
+  - **Step 1 "Kết nối Google".** A textarea "Link các Google Sheet muốn dùng (mỗi dòng một link, có thể để trống)"
+    and a checkbox "Cho phép Claude ghi dữ liệu" (default checked). The server extracts spreadsheet IDs
+    (`/spreadsheets/d/<id>` or a bare ID `^[A-Za-z0-9_-]{25,100}$`), max 50, dedup, and rejects invalid lines with the
+    line number.
+    - The personalized `ASMCP_SETUP_` gains `spreadsheets: [{id, access: "read"|"write"}]`.
+    - Then the existing copy-code → script.new → deploy → paste-URL flow.
+  - **Step 2 "Kết nối Claude"**, shown when pairing succeeds. It shows:
+    - the claude.ai connector URL (`<publicBase>/mcp`), or a note that a tunnel/public URL is needed;
+    - a ready `claude mcp add --transport http apps-script <base>/mcp --header "Authorization: Bearer <PAT>"` command,
+      where the PAT is **auto-created** for that connection with scopes `sheets.read sheets.write` and label
+      "Claude Code (tự tạo)". It is shown once, with a copy button. `<base>` is the public base if set, else
+      `http://localhost:8787`.
+- **Apps Script, on a successful setup pair:**
+  - for each `ASMCP_SETUP_.spreadsheets` entry not already on the allowlist, try `SpreadsheetApp.openById(id).getName()`;
+    on success add `{id, name, alias: name, access}` (alias uniqueness as today, with a numeric suffix on collision);
+  - on failure skip it and record it;
+  - the pair result gains `allowlist: {added: n, failed: [ids]}`.
+  - This runs only for the setup pair, and only once per token. The owner authored the list by pasting the code, so the
+    server still has no way to change the allowlist.
+- The server shows "Đã thêm N bảng tính" and lists the failed IDs with "mở trang Apps Script để thêm thủ công".

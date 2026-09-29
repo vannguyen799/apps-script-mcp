@@ -26,8 +26,14 @@ export function normalizePairingCode(input: string): string {
   return input.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+/** Setup pair only (DESIGN.md 12); absent from scripts that predate the wizard. */
+export interface AllowlistResult {
+  added: number;
+  failed: string[];
+}
+
 export type PairAttempt =
-  | { status: "paired"; account: string; scriptId: string | null; scriptName: string | null }
+  | { status: "paired"; account: string; scriptId: string | null; scriptName: string | null; allowlist: AllowlistResult | null }
   | { status: "not_ready" }
   | { status: "invalid" }
   | { status: "bad_proof" }
@@ -74,7 +80,7 @@ async function sendPair(p: PairCommon, request: Record<string, unknown>, ts: num
     if (code === "LIMIT_EXCEEDED") return { status: "limit" };
     return { status: "failed", message: typeof code === "string" ? code : "Pairing failed." };
   }
-  const r = outcome.result as { account?: unknown; proof?: unknown; scriptId?: unknown; scriptName?: unknown } | undefined;
+  const r = outcome.result as { account?: unknown; proof?: unknown; scriptId?: unknown; scriptName?: unknown; allowlist?: unknown } | undefined;
   if (!r || typeof r.account !== "string" || !verifyPairProof(p.secret, p.instanceId, ts, r.proof)) {
     return { status: "bad_proof" };
   }
@@ -83,7 +89,15 @@ async function sendPair(p: PairCommon, request: Record<string, unknown>, ts: num
     account: r.account,
     scriptId: typeof r.scriptId === "string" && r.scriptId !== "" ? r.scriptId : null,
     scriptName: typeof r.scriptName === "string" && r.scriptName !== "" ? r.scriptName.slice(0, 100) : null,
+    allowlist: parseAllowlist(r.allowlist),
   };
+}
+
+function parseAllowlist(v: unknown): AllowlistResult | null {
+  const a = v as { added?: unknown; failed?: unknown } | null | undefined;
+  if (!a || typeof a !== "object" || typeof a.added !== "number" || !Number.isFinite(a.added)) return null;
+  const failed = Array.isArray(a.failed) ? a.failed.filter((x): x is string => typeof x === "string").slice(0, 50) : [];
+  return { added: Math.max(0, Math.floor(a.added)), failed };
 }
 
 /** One code-pairing poll. */

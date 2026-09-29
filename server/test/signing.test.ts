@@ -149,7 +149,7 @@ describe("pairing", () => {
 
   it("accepts a valid proof", async () => {
     const r = await attemptPair({ ...base, fetchImpl: pairFetch((s, i, t) => manual(s, `v1\npair-ack\n${i}\n${t}`)) });
-    expect(r).toEqual({ status: "paired", account: "me@example.com", scriptId: null, scriptName: null });
+    expect(r).toEqual({ status: "paired", account: "me@example.com", scriptId: null, scriptName: null, allowlist: null });
   });
 
   it("rejects a wrong proof and a proof for another timestamp", async () => {
@@ -163,7 +163,7 @@ describe("pairing", () => {
       const result = { account: "me@example.com", scriptId: "SID1", scriptName: null, proof: manual(req.secret, `v1\npair-ack\n${req.instanceId}\n${req.ts}`) };
       return new Response(JSON.stringify({ body: JSON.stringify({ ok: true, result }), sig: null }), { status: 200 });
     }) as unknown as typeof fetch;
-    expect(await attemptPair({ ...base, fetchImpl: f })).toEqual({ status: "paired", account: "me@example.com", scriptId: "SID1", scriptName: null });
+    expect(await attemptPair({ ...base, fetchImpl: f })).toEqual({ status: "paired", account: "me@example.com", scriptId: "SID1", scriptName: null, allowlist: null });
   });
 
   it("maps PAIRING_NOT_READY, PAIRING_INVALID, REQUEST_EXPIRED and LIMIT_EXCEEDED", async () => {

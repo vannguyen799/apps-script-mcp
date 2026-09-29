@@ -96,7 +96,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     "/api/session",
     wrap((req, res) => {
       const s = sessionOf(req);
-      res.json({ authenticated: !!s, csrfToken: s?.csrf ?? null, username: s?.user.username ?? null, role: s?.user.role ?? null, setupAvailable: deps.registry.setupAvailable });
+      res.json({ authenticated: !!s, csrfToken: s?.csrf ?? null, username: s?.user.username ?? null, role: s?.user.role ?? null, setupAvailable: deps.registry.setupAvailable, publicBase: deps.baseUrl() ?? null });
     }),
   );
 

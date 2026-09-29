@@ -58,6 +58,10 @@ export interface PendingConnection {
   /** Normalised code (no dash), mode "code" only. */
   code?: string;
   codeExpiresAt?: number;
+  /** Started from the setup wizard (DESIGN.md 12): the first new pairing auto-creates a PAT. */
+  wizard?: boolean;
+  /** Wizard only: the spreadsheets carried by the personalised Code.gs. */
+  spreadsheets?: { id: string; access: "read" | "write" }[];
 }
 
 export interface StoredClient {

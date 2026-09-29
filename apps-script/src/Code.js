@@ -220,6 +220,50 @@ function normalizeAlias_(alias, fallbackName) {
   return a;
 }
 
+/**
+ * Section 12: the spreadsheets the owner pasted into ASMCP_SETUP_ join the allowlist on the setup pair (caller holds
+ * the lock, runs once per token). Entries already listed are left untouched; ones that cannot be opened are skipped.
+ * Returns {added: n, failed: [ids]}.
+ */
+function applySetupSpreadsheets_(entries) {
+  var out = { added: 0, failed: [] };
+  if (!Array.isArray(entries)) return out;
+  var list = getAllowlist_();
+  for (var i = 0; i < entries.length && i < 50; i++) {
+    var e = entries[i];
+    var id = e && typeof e.id === 'string' ? e.id : '';
+    if (!/^[A-Za-z0-9_-]{25,100}$/.test(id) || (e.access !== 'read' && e.access !== 'write')) {
+      if (id) out.failed.push(id.slice(0, 100));
+      continue;
+    }
+    var known = false;
+    for (var j = 0; j < list.length; j++) if (list[j].id === id) known = true;
+    if (known) continue;
+    var name;
+    try {
+      name = String(SpreadsheetApp.openById(id).getName());
+    } catch (err) {
+      out.failed.push(id);
+      continue;
+    }
+    var base = name.trim().slice(0, 64) || id.slice(0, 8);
+    var alias = base;
+    for (var n = 2; ; n++) {
+      try {
+        assertAliasFree_(list, alias, null);
+        break;
+      } catch (taken) {
+        var suffix = ' ' + n;
+        alias = base.slice(0, 64 - suffix.length) + suffix;
+      }
+    }
+    list.push({ id: id, name: name, alias: alias, access: e.access });
+    out.added++;
+  }
+  if (out.added > 0) saveAllowlist_(list);
+  return out;
+}
+
 function assertAliasFree_(list, alias, exceptId) {
   var lower = alias.toLowerCase();
   for (var i = 0; i < list.length; i++) {

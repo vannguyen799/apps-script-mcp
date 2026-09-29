@@ -2,7 +2,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BundleError, SETUP_LINE, loadBundle, personalizeBundle, setupLineCount } from "../src/connection/setup-bundle.js";
+import { BundleError, SETUP_LINE, loadBundle, parseSpreadsheetLines, personalizeBundle, setupLineCount } from "../src/connection/setup-bundle.js";
+import { GatewayError } from "../src/core/sheets/gateway.js";
 import type { Logger } from "../src/log.js";
 
 const BLOCK = { server: "https://mcp.example.com", token: "T".repeat(43), expiresAt: 1_800_000_000_000 };
@@ -100,5 +101,53 @@ describe("loadBundle", () => {
     expect(await loadBundle(twice, l.log)).toBeNull();
     expect(l.lines.map((x) => x.split(" ").slice(0, 2).join(" "))).toEqual(["warn bundle_missing", "error bundle_unusable", "error bundle_unusable"]);
     expect(l.lines.join("\n")).not.toContain("function x");
+  });
+});
+
+describe("wizard spreadsheet input (DESIGN.md 12)", () => {
+  const A = "1" + "a".repeat(43);
+  const B = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms";
+
+  it("accepts URL forms and bare ids, in order, ignoring blank lines", () => {
+    const text = [
+      `https://docs.google.com/spreadsheets/d/${A}/edit#gid=0`,
+      "",
+      `  docs.google.com/spreadsheets/d/${B}  `,
+      `https://docs.google.com/spreadsheets/d/${"c".repeat(30)}`,
+      "d".repeat(25),
+      "\r",
+    ].join("\r\n");
+    expect(parseSpreadsheetLines(text)).toEqual([A, B, "c".repeat(30), "d".repeat(25)]);
+    expect(parseSpreadsheetLines("")).toEqual([]);
+    expect(parseSpreadsheetLines("  \n\n")).toEqual([]);
+    expect(parseSpreadsheetLines(undefined)).toEqual([]);
+  });
+
+  it("drops duplicates whatever their form", () => {
+    expect(parseSpreadsheetLines(`${A}\nhttps://docs.google.com/spreadsheets/d/${A}/edit\n${A}`)).toEqual([A]);
+  });
+
+  it("rejects invalid lines together, by 1-based line number (blank lines count)", () => {
+    const run = () => parseSpreadsheetLines(`${A}\n\nhttps://example.com/nothing\nshort\n${"a".repeat(101)}\nhttps://docs.google.com/spreadsheets/d/abc/edit\nhas space ${"a".repeat(30)}`);
+    expect(run).toThrow(GatewayError);
+    expect(run).toThrow(/Dòng 3, 4, 5, 6, 7 /);
+    expect(() => parseSpreadsheetLines(`${A}\n$$$$$$$$$$$$$$$$$$$$$$$$$$$`)).toThrow(/Dòng 2 /);
+  });
+
+  it("allows 50 distinct spreadsheets and rejects 51; duplicates do not count", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`.padEnd(30, "x"));
+    expect(parseSpreadsheetLines(ids(50).join("\n"))).toHaveLength(50);
+    expect(parseSpreadsheetLines([...ids(50), ...ids(50)].join("\n"))).toHaveLength(50);
+    expect(() => parseSpreadsheetLines(ids(51).join("\n"))).toThrow(/50/);
+  });
+
+  it("puts the spreadsheets into ASMCP_SETUP_ as JSON, and omits the key when there are none to carry", () => {
+    const sheets = [{ id: A, access: "write" as const }, { id: B, access: "read" as const }];
+    const out = personalizeBundle(BUNDLE, { ...BLOCK, spreadsheets: sheets });
+    const line = out.split("\n").find((l) => l.startsWith("var ASMCP_SETUP_"))!;
+    expect(JSON.parse(line.slice("var ASMCP_SETUP_ = ".length, -1))).toEqual({ ...BLOCK, spreadsheets: sheets });
+    expect(out.split("\n")).toHaveLength(BUNDLE.split("\n").length);
+    expect(personalizeBundle(BUNDLE, { ...BLOCK, spreadsheets: [] })).toContain('"spreadsheets":[]');
+    expect(personalizeBundle(BUNDLE, BLOCK)).not.toContain("spreadsheets");
   });
 });

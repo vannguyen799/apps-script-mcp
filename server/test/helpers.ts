@@ -143,6 +143,7 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const baseUrl = new PublicBaseUrl(opts.envBase, store);
   const registry = new ConnectionRegistry({
     store,
+    pats,
     instanceLabel: "test",
     bundle: opts.bundle ?? null,
     baseUrl: () => baseUrl.get(),

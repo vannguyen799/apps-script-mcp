@@ -75,6 +75,17 @@ ol{padding-left:20px;margin:6px 0}
 
     <section id="add-card" class="card hidden">
       <h2>Thêm Apps Script</h2>
+
+      <div id="step1">
+        <h3 style="margin-top:0">Bước 1: Kết nối Google</h3>
+        <label for="sheets-text">Link các Google Sheet muốn dùng (mỗi dòng một link, có thể để trống)</label>
+        <textarea id="sheets-text" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/.../edit"></textarea>
+        <label class="lbl" style="font-weight:400"><input type="checkbox" id="sheets-write" checked style="flex:none"> Cho phép Claude ghi dữ liệu</label>
+        <div id="step1-msg" class="msg err hidden"></div>
+        <div class="row"><button id="btn-step1" class="primary" type="button">Tiếp tục</button><button id="btn-step1-cancel" type="button">Hủy</button></div>
+      </div>
+
+      <div id="step-flow" class="hidden">
       <div id="add-msg" class="msg info hidden"></div>
       <p class="muted">Phiên này hết hạn sau <strong id="add-left">30:00</strong>.</p>
 
@@ -94,7 +105,7 @@ ol{padding-left:20px;margin:6px 0}
         </ol>
       </div>
 
-      <div class="opt">
+      <div id="opt-code" class="opt">
         <h3 style="margin-top:0">Cách 2: Script đã cài sẵn (dùng mã ghép cặp)</h3>
         <p class="muted" style="margin-top:0">Dành cho script đã có bản Code.gs mới. Dán URL web app, rồi nhập mã hiện ra vào trang quản trị của script.</p>
         <input id="url-code" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" aria-label="URL web app">
@@ -107,7 +118,23 @@ ol{padding-left:20px;margin:6px 0}
 
       <div id="wait-box" class="msg info hidden"></div>
       <div id="done-box" class="msg ok hidden"></div>
-      <div class="row"><a id="btn-back-consent" class="btn primary hidden" href="#">Quay lại cấp quyền</a><button id="btn-add-cancel" type="button">Hủy</button></div>
+
+      <div id="step2" class="opt hidden">
+        <h3 style="margin-top:0">Bước 2: Kết nối Claude</h3>
+        <div id="s2-url-box" class="hidden">
+          <p><strong>claude.ai:</strong> Settings &rarr; Connectors &rarr; Add custom connector, dán URL:</p>
+          <div class="mono" id="s2-url"></div>
+          <div class="row"><button id="btn-copy-s2-url" type="button">Copy</button></div>
+        </div>
+        <p id="s2-nourl" class="muted hidden">Để dùng claude.ai, server cần một URL công khai (bật <code>TUNNEL</code> hoặc đặt <code>PUBLIC_BASE_URL</code>).</p>
+        <div id="s2-cmd-box" class="once hidden">
+          <strong>Claude Code: copy lệnh ngay - token sẽ không hiển thị lại.</strong>
+          <pre id="s2-cmd"></pre>
+          <div class="row"><button id="btn-copy-s2-cmd" type="button">Copy</button></div>
+        </div>
+      </div>
+      <div class="row"><a id="btn-back-consent" class="btn primary hidden" href="#">Quay lại cấp quyền</a><button id="btn-add-cancel" type="button">Đóng</button></div>
+      </div>
     </section>
 
     <section class="card">
@@ -222,7 +249,7 @@ function route() {
 
 function loadDash() {
   return Promise.all([refreshConns(), refreshPats(), refreshUsage()]).then(function () {
-    if (params.get("add") === "1" && !pendingId) { params.delete("add"); startAdd(); }
+    if ((params.get("add") === "1" || !connections.length) && !pendingId && $("add-card").classList.contains("hidden")) { params.delete("add"); startAdd(); }
   });
 }
 
@@ -261,16 +288,41 @@ function refreshConns() {
 /* ---------- add an Apps Script ---------- */
 function stopAdd() { clearInterval(pendingTimer); clearInterval(addLeftTimer); pendingTimer = null; }
 
+/* Step 1 (DESIGN.md 12): nothing is created on the server until the user continues. */
 function startAdd() {
-  notice(""); stopAdd();
-  show("add-card", true); show("done-box", false); show("wait-box", false); show("code-box", false); show("btn-back-consent", false); box("add-msg", "");
+  notice(""); stopAdd(); pendingId = null;
+  show("add-card", true); show("step1", true); show("step-flow", false); show("step2", false);
+  show("done-box", false); show("wait-box", false); show("code-box", false); show("btn-back-consent", false); box("add-msg", ""); box("step1-msg", "");
+  show("opt-new", !!(me && me.setupAvailable)); show("opt-code", true);
   $("bundle-text").classList.add("hidden"); $("url-new").value = ""; $("url-code").value = "";
-  return api("POST", "/account/api/pending", {}).then(function (r) {
+  $("add-card").scrollIntoView();
+}
+
+function continueStep1() {
+  box("step1-msg", "");
+  return api("POST", "/account/api/pending", { wizard: true, spreadsheets: $("sheets-text").value, write: $("sheets-write").checked }).then(function (r) {
+    show("step1", false); show("step-flow", true);
     applyPending(r.pending);
     $("btn-download").setAttribute("href", "/account/api/pending/" + encodeURIComponent(pendingId) + "/Code.gs");
     pendingTimer = setInterval(pollPending, 2000);
-    $("add-card").scrollIntoView();
-  }).catch(function (e) { notice(e.message); });
+  }).catch(function (e) { box("step1-msg", e.message); });
+}
+
+/* Step 2: the claude.ai connector URL and the ready command with the auto-created PAT (shown once). */
+function showStep2(pat) {
+  var base = me && me.publicBase ? me.publicBase.replace(/\/+$/, "") : "";
+  show("s2-url-box", !!base); show("s2-nourl", !base);
+  if (base) $("s2-url").textContent = base + "/mcp";
+  show("s2-cmd-box", !!pat);
+  if (pat) $("s2-cmd").textContent = 'claude mcp add --transport http apps-script ' + (base || "http://localhost:8787") + '/mcp --header "Authorization: Bearer ' + pat + '"';
+  show("step2", true);
+}
+
+function allowlistText(a) {
+  if (!a || (!a.added && !a.failed.length)) return "";
+  var t = "Đã thêm " + a.added + " bảng tính.";
+  if (a.failed.length) t += " Không mở được: " + a.failed.join(", ") + " - mở trang Apps Script để thêm thủ công.";
+  return t;
 }
 
 function tickAddLeft() {
@@ -286,8 +338,10 @@ function applyPending(p) {
   else box("wait-box", p.state === "failed" || p.state === "expired" ? "" : p.message);
   if (p.state === "connected") {
     stopAdd();
-    box("done-box", (p.updated ? "Script này đã được kết nối trước đó, đã cập nhật." : "Đã kết nối") + (p.connection ? ": " + p.connection.account : ""));
+    box("done-box", (p.updated ? "Script này đã được kết nối trước đó, đã cập nhật." : "Đã kết nối") + (p.connection ? ": " + p.connection.account : "") + " " + allowlistText(p.allowlist));
     box("wait-box", "");
+    show("opt-new", false); show("opt-code", false);
+    showStep2(p.pat);
     if (consentNonce) { $("btn-back-consent").setAttribute("href", "/oauth/consent?nonce=" + encodeURIComponent(consentNonce)); show("btn-back-consent", true); }
     pendingId = null; refreshConns();
   } else if (p.state === "failed" || p.state === "expired") {
@@ -360,6 +414,10 @@ $("btn-logout").addEventListener("click", function () { doLogout("/account/logou
 $("btn-logout-all").addEventListener("click", function () { if (confirm("Đăng xuất khỏi mọi thiết bị?")) doLogout("/account/logout-all"); });
 
 $("btn-add").addEventListener("click", startAdd);
+$("btn-step1").addEventListener("click", continueStep1);
+$("btn-step1-cancel").addEventListener("click", function () { show("add-card", false); });
+$("btn-copy-s2-url").addEventListener("click", function () { copyText($("s2-url").textContent, $("btn-copy-s2-url")); });
+$("btn-copy-s2-cmd").addEventListener("click", function () { copyText($("s2-cmd").textContent, $("btn-copy-s2-cmd")); });
 $("btn-add-cancel").addEventListener("click", function () {
   stopAdd(); show("add-card", false);
   if (pendingId) api("DELETE", "/account/api/pending/" + encodeURIComponent(pendingId)).catch(function () {});

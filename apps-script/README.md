@@ -29,7 +29,7 @@
 4. **Triển khai** → **Tùy chọn triển khai mới** → loại **Ứng dụng web**:
    *Thực thi dưới dạng*: **Tôi**; *Người có quyền truy cập*: **Bất kỳ ai**. Bấm Triển khai và cấp quyền khi được hỏi.
 5. Copy URL web app (kết thúc bằng `/exec`) và **dán lại vào trang MCP**. Máy chủ tự ghép nối với script qua khối cài đặt; bạn không nhập mã nào.
-6. Mở URL web app (đã đăng nhập bằng tài khoản chủ sở hữu) để thêm bảng tính vào danh sách được phép, xem [Thêm bảng tính](#5-thêm-bảng-tính).
+6. Các bảng tính đã dán ở bước 1 của trình hướng dẫn được thêm vào danh sách được phép ngay khi ghép nối (bảng nào không mở được sẽ bị bỏ qua). Muốn thêm hoặc đổi sau này, mở URL web app (đã đăng nhập bằng tài khoản chủ sở hữu), xem [Thêm bảng tính](#5-thêm-bảng-tính).
    Trước khi ghép nối xong, trang quản trị hiển thị "Script này đã sẵn sàng kết nối với <máy chủ>"; sau đó hiển thị "Đã kết nối".
 
 Mã cài đặt chỉ dùng được **một lần** (kể cả khi ghép nối lỗi giữa chừng thì bạn vẫn có thể thử lại cho đến khi thành công). Nhập sai chứng thực

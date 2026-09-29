@@ -72,58 +72,37 @@ docker compose logs apps-script-mcp | grep "Admin login"
 ```
 </details>
 
-### 2. Đăng nhập
+### 2. Đăng nhập và làm theo trình hướng dẫn
 
-Mở trang tài khoản và đăng nhập bằng tài khoản chủ sở hữu vừa tạo:
+Mở **http://localhost:8787/account** (hoặc `https://<domain>/account` khi đã có tunnel, xem [Public qua tunnel](#public-qua-tunnel)) và đăng nhập bằng tài khoản chủ sở hữu.
+Khi chưa có kết nối nào, trình hướng dẫn tự mở:
 
-- máy local: **http://localhost:8787/account**;
-- khi đã có tunnel: `https://<domain>/account` (URL public lấy từ tunnel tích hợp, `PUBLIC_BASE_URL` hoặc trang admin, xem [Public qua tunnel](#public-qua-tunnel)).
+1. **Bước 1 - Kết nối Google.** Dán link các Google Sheet muốn dùng (mỗi dòng một link, có thể để trống) và chọn có cho Claude ghi hay không, rồi **Tiếp tục**.
+2. Bấm **Copy Code.gs**, mở <https://script.new>, dán vào `Code.gs` và lưu.
+3. **Deploy → New deployment → Web app** (*Execute as: Me*, *Who has access: Anyone*), cấp quyền, copy URL web app và dán vào trang, bấm **Kết nối**.
+4. **Bước 2 - Kết nối Claude.** Copy lệnh `claude mcp add ...` (token đã được tạo sẵn, chỉ hiện một lần) hoặc dán URL `<domain>/mcp` vào connector của claude.ai.
 
-Server này dành cho **một người dùng**: chỉ có tài khoản chủ sở hữu, không có thành viên hay lời mời. Nếu bản cũ của bạn từng có thành viên,
-khi khởi động lần đầu với bản mới, các thành viên cùng kết nối, token và PAT của họ bị xóa (log ghi `users_pruned` kèm số lượng).
+Xong. Thử hỏi Claude: *"Đọc Sales!A1:F100 trong spreadsheet sales"*.
 
-Muốn tự chọn mật khẩu ban đầu thay vì mật khẩu ngẫu nhiên (ví dụ triển khai tự động), xem [Tạo chủ sở hữu từ biến môi trường](#tạo-chủ-sở-hữu-từ-biến-môi-trường).
-
-### 3. Kết nối một Apps Script (dán 1 file, không nhập mã)
-
-Làm một lần cho mỗi script (mỗi script là một tài khoản Google):
-
-1. Ở trang `/account` bấm **Thêm Apps Script**, rồi **Tải Code.gs** hoặc **Copy Code.gs**. File này đã được cá nhân hóa cho lần thêm này.
-2. Mở <https://script.new>, xóa nội dung mặc định của `Code.gs`, dán file vừa lấy vào và lưu.
-3. **Deploy → New deployment → Web app**, chọn *Execute as: Me* và *Who has access: Anyone*, rồi cấp quyền bằng tài khoản Google của bạn.
-4. Copy URL web app (`https://script.google.com/macros/s/…/exec`) và dán vào trang `/account`, bấm **Kết nối**.
-5. Trạng thái chuyển sang **Đã kết nối**. Phiên thêm Apps Script hết hạn sau 30 phút.
-
-Nếu bạn triển khai lại cùng một script (URL đổi), cứ thêm lại: server nhận ra đó là cùng script và cập nhật kết nối cũ
-(token và PAT đang dùng vẫn chạy), không tạo bản mới.
+Ghi chú:
+- Các bảng tính trong bước 1 được thêm vào danh sách được phép ngay khi ghép nối, alias lấy theo tên bảng tính (trùng thì thêm số). Bảng nào không mở được sẽ được liệt kê để bạn thêm thủ công
+  ở trang quản trị Apps Script (mở URL web app), nơi bạn cũng đổi alias, đổi quyền hoặc thêm bảng tính sau này. Server không có cách nào tự sửa danh sách này.
+- Phiên thêm Apps Script hết hạn sau 30 phút. Muốn thêm script khác về sau, bấm **Thêm Apps Script** (mỗi script là một tài khoản Google).
+- Deploy lại cùng một script (URL đổi): cứ thêm lại, server nhận ra đó là cùng script và cập nhật kết nối cũ (token và PAT đang dùng vẫn chạy, không tạo PAT mới).
+- claude.ai (Custom connector) cần một URL HTTPS public. Khi Claude mở trang cấp quyền: đăng nhập, chọn Apps Script (lần sau script dùng gần nhất được chọn sẵn) rồi bấm **Cho phép**.
+- Mỗi PAT gắn với đúng một kết nối. Xóa kết nối thì các token gắn với nó báo lỗi *"Kết nối Apps Script đã bị xóa, hãy kết nối lại"*. Tạo thêm PAT ở mục *Personal Access Tokens* của `/account`.
+- Server này dành cho **một người dùng**: chỉ có tài khoản chủ sở hữu. Muốn tự chọn mật khẩu ban đầu, xem [Tạo chủ sở hữu từ biến môi trường](#tạo-chủ-sở-hữu-từ-biến-môi-trường).
+  Bản cũ từng có thành viên: khi khởi động lần đầu với bản mới, các thành viên cùng kết nối, token và PAT của họ bị xóa (log ghi `users_pruned`).
 
 <details>
 <summary>Script đã cài sẵn từ trước (dùng mã ghép nối)</summary>
 
 Dành cho script đã có bản `Code.gs` mới nhưng chưa ghép với server này. Ở trang **Thêm Apps Script**, mục *Cách 2*: dán URL web app và bấm
 **Tạo mã ghép cặp**; mở trang quản trị Apps Script (đăng nhập bằng đúng tài khoản chủ) và nhập mã `XXXX-XXXX` hiện ra. Mã dùng một lần, hết hạn sau 10 phút.
+Cách này không thêm bảng tính nào: hãy thêm ở trang quản trị Apps Script.
 
 Chi tiết và cách cập nhật script: [apps-script/README.md](apps-script/README.md).
 </details>
-
-### 4. Chọn spreadsheet
-
-Trong trang Apps Script, thêm spreadsheet bằng URL hoặc ID. Đặt alias (ví dụ `sales`) và quyền cho từng file:
-**chỉ đọc** hoặc **đọc/ghi**. Claude chỉ thấy các file trong danh sách này.
-
-### 5. Kết nối Claude
-
-- **claude.ai (Custom connector)**: cần một URL HTTPS public, xem [Public qua tunnel](#public-qua-tunnel).
-  Thêm connector với URL `https://<domain>/mcp`. Claude mở trang cấp quyền: **đăng nhập** bằng tài khoản của bạn, **chọn Apps Script**
-  muốn dùng (lần sau kết nối, script dùng gần nhất được chọn sẵn; có thể **Thêm Apps Script mới** ngay tại đó) rồi bấm **Cho phép**.
-  Không cần ghép nối lại.
-- **Claude Code / Claude Desktop** (máy local): ở trang `/account`, mục *Personal Access Tokens*, chọn kết nối, tick quyền và tạo token, rồi chạy:
-  ```bash
-  claude mcp add --transport http apps-script http://localhost:8787/mcp --header "Authorization: Bearer asmcp_pat_..."
-  ```
-  Mỗi PAT gắn với đúng một kết nối Apps Script. Xóa kết nối thì các token gắn với nó báo lỗi *"Kết nối Apps Script đã bị xóa, hãy kết nối lại"*.
-
-Xong. Thử hỏi Claude: *“Đọc Sales!A1:F100 trong spreadsheet sales”*.
 
 ## MCP tools
 
@@ -158,7 +137,7 @@ Sheets (Drive, Docs, Gmail, Lịch...). Mặc định **tắt** và cần bật 
 - Mã chạy với toàn quyền của tài khoản Google của bạn, trong giới hạn 6 phút của Apps Script. Nhật ký trên Apps Script chỉ lưu mã băm của mã (50 lần gần nhất), không lưu nội dung.
 
 **Claude Code / Claude Desktop (PAT).** Ở trang `/account`, mục *Personal Access Tokens*, tick thêm ô `script.eval` (mặc định không tick)
-khi tạo token, rồi thêm connector như ở bước 5 với token đó. Nên tạo một token riêng cho việc này và thu hồi khi không dùng.
+khi tạo token, rồi thêm connector (lệnh `claude mcp add` ở bước 2 của trình hướng dẫn) với token đó. Nên tạo một token riêng cho việc này và thu hồi khi không dùng.
 
 **claude.ai (OAuth).** Client tự quyết định xin scope nào; server không tự thêm `script.eval` cho ai. Một client không gửi
 `scope` khi xin quyền chỉ nhận mặc định `sheets.read sheets.write` (kể cả khi lúc đăng ký DCR nó khai `scope` chứa `script.eval`),

@@ -10,13 +10,14 @@ import {
   formatPairingCode,
   generatePairingCode,
 } from "../adapters/apps-script/pairing.js";
-import type { PairAttempt } from "../adapters/apps-script/pairing.js";
+import type { AllowlistResult, PairAttempt } from "../adapters/apps-script/pairing.js";
 import { newSecret } from "../adapters/apps-script/signing.js";
 import type { FetchLike } from "../adapters/apps-script/transport.js";
 import type { EvalResult, ScriptEvaluator } from "../core/script/evaluator.js";
 import { isScriptEvaluator } from "../core/script/evaluator.js";
 import type { SheetsGateway } from "../core/sheets/gateway.js";
 import { GatewayError } from "../core/sheets/gateway.js";
+import type { PatService } from "../auth/pat.js";
 import { SheetsService } from "../core/sheets/sheets.service.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
@@ -68,6 +69,10 @@ export interface PendingView {
   connection: ConnectionView | null;
   /** True when the pairing refreshed an existing connection of the same script instead of adding one. */
   updated: boolean;
+  /** What the script did with the wizard's spreadsheets; null when there were none or the script is older. */
+  allowlist: AllowlistResult | null;
+  /** The auto-created PAT (DESIGN.md 12): present in exactly one status response, the first one after pairing. */
+  pat: string | null;
 }
 
 /** What a tool call runs against: resolved from a connection id, never from tool input. */
@@ -85,11 +90,16 @@ interface Outcome {
   message: string | null;
   connectionId?: string;
   updated?: boolean;
+  allowlist?: AllowlistResult | null;
+  /** Deleted as soon as it has been returned once. */
+  pat?: string;
   at: number;
 }
 
 export interface ConnectionRegistryOptions {
   store: StateStore;
+  /** Creates the wizard's PAT; without it the wizard just does not create one. */
+  pats?: PatService;
   logger?: Logger;
   instanceLabel: string;
   /** The shipped Code.gs with the placeholder line, or null (personalised download hidden). */
@@ -300,7 +310,8 @@ export class ConnectionRegistry {
     for (const [id, o] of this.outcomes) if (t - o.at > OUTCOME_KEEP_MS) this.outcomes.delete(id);
   }
 
-  async startPending(userId: string): Promise<PendingView> {
+  /** `wizard` (DESIGN.md 12): the spreadsheets for the personalised Code.gs; the first new pairing then auto-creates a PAT. */
+  async startPending(userId: string, wizard?: { spreadsheets: string[]; write: boolean }): Promise<PendingView> {
     this.prune();
     const t = this.now();
     const rec: PendingConnection = {
@@ -310,6 +321,7 @@ export class ConnectionRegistry {
       secret: newSecret(),
       setupToken: randomB64Url(32),
       expiresAt: t + PENDING_TTL_MS,
+      ...(wizard ? { wizard: true, spreadsheets: wizard.spreadsheets.map((id) => ({ id, access: wizard.write ? ("write" as const) : ("read" as const) })) } : {}),
     };
     await this.store.update((s) => {
       for (const [id, p] of Object.entries(s.pendingConnections)) if (p.expiresAt <= t) delete s.pendingConnections[id];
@@ -341,6 +353,8 @@ export class ConnectionRegistry {
       message: this.notes.get(p.id) ?? null,
       connection: null,
       updated: false,
+      allowlist: null,
+      pat: null,
     };
   }
 
@@ -362,10 +376,18 @@ export class ConnectionRegistry {
         message: o.message,
         connection: o.connectionId ? (this.getView(o.connectionId) ?? null) : null,
         updated: o.updated ?? false,
+        allowlist: o.allowlist ?? null,
+        pat: this.takePat(o),
       };
     }
     if (this.store.state.pendingConnections[id]?.userId === userId) return { ...this.pendingView(this.store.state.pendingConnections[id]!), state: "expired", message: "Phiên thêm Apps Script đã hết hạn." };
     return undefined;
+  }
+
+  private takePat(o: Outcome): string | null {
+    const pat = o.pat ?? null;
+    delete o.pat;
+    return pat;
   }
 
   async cancelPending(id: string, userId: string): Promise<boolean> {
@@ -415,7 +437,7 @@ export class ConnectionRegistry {
     if (!p) throw new GatewayError("BAD_REQUEST", "Phiên thêm Apps Script không tồn tại hoặc đã hết hạn.");
     if (typeof bundle !== "string") throw new GatewayError("BAD_REQUEST", "Bản Code.gs cá nhân hóa không có sẵn trên server này.");
     try {
-      return personalizeBundle(bundle, { server: this.opts.baseUrl?.() ?? "local", token: p.setupToken, expiresAt: p.expiresAt });
+      return personalizeBundle(bundle, { server: this.opts.baseUrl?.() ?? "local", token: p.setupToken, expiresAt: p.expiresAt, spreadsheets: p.spreadsheets });
     } catch {
       throw new GatewayError("INTERNAL", "Bản Code.gs trên server không hợp lệ.");
     }
@@ -560,12 +582,23 @@ export class ConnectionRegistry {
       return;
     }
     this.runtimes.delete(connectionId); // credentials may have changed
+    // Only a brand-new connection gets the wizard's PAT: re-pairing a script must not mint another token.
+    let pat: string | undefined;
+    if (p.wizard && !updated && this.opts.pats) {
+      try {
+        pat = (await this.opts.pats.create(p.userId, connectionId, "Claude Code (tự tạo)", ["sheets.read", "sheets.write"])).token;
+      } catch {
+        this.log.warn("wizard_pat_failed");
+      }
+    }
     this.outcomes.set(p.id, {
       userId: p.userId,
       state: "connected",
       message: updated ? "Script này đã được kết nối trước đó, đã cập nhật." : null,
       connectionId,
       updated,
+      allowlist: r.allowlist,
+      pat,
       at: t,
     });
     this.log.info("pairing_completed", { reason: updated ? "updated" : "created" });

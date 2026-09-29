@@ -37,6 +37,7 @@ async function main(): Promise<void> {
 
   const registry = new ConnectionRegistry({
     store,
+    pats,
     logger: log,
     instanceLabel: `apps-script-mcp@${hostname()}`,
     bundle,

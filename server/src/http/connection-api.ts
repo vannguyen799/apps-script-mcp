@@ -1,5 +1,6 @@
 import type { Request, RequestHandler, Response, Router } from "express";
 import type { ConnectionRegistry } from "../connection/connection-registry.js";
+import { parseSpreadsheetLines } from "../connection/setup-bundle.js";
 import { HttpError } from "./errors.js";
 
 export type Wrap = (fn: (req: Request, res: Response) => Promise<void> | void) => RequestHandler;
@@ -14,7 +15,10 @@ export function mountPendingRoutes(router: Router, registry: ConnectionRegistry,
   router.post(
     "/pending",
     wrap(async (req, res) => {
-      res.status(201).json({ pending: await registry.startPending(userIdOf(req)) });
+      // Wizard (DESIGN.md 12): { wizard: true, spreadsheets: "one link or id per line", write: boolean (default true) }.
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const wizard = b.wizard === true ? { spreadsheets: parseSpreadsheetLines(b.spreadsheets), write: b.write !== false } : undefined;
+      res.status(201).json({ pending: await registry.startPending(userIdOf(req), wizard) });
     }),
   );
 

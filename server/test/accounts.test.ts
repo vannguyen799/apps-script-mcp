@@ -336,6 +336,23 @@ describe("account API scoping", () => {
     expect((await pub(h, "DELETE", `/account/api/pats/${ok.json.pat.id}`, { cookie: owner.cookie, csrf: owner.csrf, body: {} })).status).toBe(200);
   });
 
+  it("the wizard POST /pending validates the sheet lines (400 with line numbers) and embeds the sheets in Code.gs", async () => {
+    const bundle = "// header\nvar ASMCP_SETUP_ = null;\nfunction doPost() {}\n";
+    h = await makeHarness({ bundle, connection: false });
+    const owner = await accountLogin(h, h.username, h.password);
+    const id = "1" + "a".repeat(43);
+    const bad = await pub(h, "POST", "/account/api/pending", { cookie: owner.cookie, csrf: owner.csrf, body: { wizard: true, spreadsheets: `${id}\nnope`, write: true } });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.message).toContain("Dòng 2");
+    expect(Object.keys(h.store.state.pendingConnections)).toHaveLength(0);
+
+    const ok = await pub(h, "POST", "/account/api/pending", { cookie: owner.cookie, csrf: owner.csrf, body: { wizard: true, spreadsheets: `https://docs.google.com/spreadsheets/d/${id}/edit\n${id}`, write: false } });
+    expect(ok.status).toBe(201);
+    const file = (await pub(h, "GET", `/account/api/pending/${ok.json.pending.id}/bundle`, { cookie: owner.cookie })).json.text as string;
+    expect(file).toContain(`"spreadsheets":[{"id":"${id}","access":"read"}]`);
+    expect((await pub(h, "GET", "/account/api/session", { cookie: owner.cookie })).json).toHaveProperty("publicBase");
+  });
+
   it("the Add-Apps-Script flow is private to its user and serves the personalised Code.gs as a download and as text", async () => {
     const bundle = "// header\nvar ASMCP_SETUP_ = null;\nfunction doPost() {}\n";
     h = await makeHarness({ bundle, connection: false });

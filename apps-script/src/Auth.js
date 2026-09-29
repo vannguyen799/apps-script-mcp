@@ -116,13 +116,12 @@ function getScriptId_() {
  * Success body shared by code pairing and setup pairing (section 4.2 step 4): {account, scriptId, scriptName, proof}.
  * scriptName is always null: Apps Script has no scope-free way to read the project name (that needs Drive).
  */
-function pairAck_(secret, instanceId, ts) {
+function pairAck_(secret, instanceId, ts, allowlist) {
   var proof = hmacHex_(secret, 'v1\npair-ack\n' + instanceId + '\n' + ts);
   var account = Session.getEffectiveUser().getEmail();
-  return {
-    body: JSON.stringify({ ok: true, result: { account: account, scriptId: getScriptId_(), scriptName: null, proof: proof } }),
-    sig: null
-  };
+  var result = { account: account, scriptId: getScriptId_(), scriptName: null, proof: proof };
+  if (allowlist) result.allowlist = allowlist; // setup pair only (section 12)
+  return { body: JSON.stringify({ ok: true, result: result }), sig: null };
 }
 
 /** Pairing (section 4.2 steps 3-4; setup mode: section 9.3). */
@@ -214,7 +213,7 @@ function handleSetupPair_(req) {
     });
     addSetupConsumed_(hash);
     clearSetupAttempts_();
-    return pairAck_(req.secret, req.instanceId, req.ts);
+    return pairAck_(req.secret, req.instanceId, req.ts, applySetupSpreadsheets_(block.spreadsheets));
   });
 }
 

@@ -235,6 +235,50 @@ function normalizeAlias_(alias, fallbackName) {
   return a;
 }
 
+/**
+ * Section 12: the spreadsheets the owner pasted into ASMCP_SETUP_ join the allowlist on the setup pair (caller holds
+ * the lock, runs once per token). Entries already listed are left untouched; ones that cannot be opened are skipped.
+ * Returns {added: n, failed: [ids]}.
+ */
+function applySetupSpreadsheets_(entries) {
+  var out = { added: 0, failed: [] };
+  if (!Array.isArray(entries)) return out;
+  var list = getAllowlist_();
+  for (var i = 0; i < entries.length && i < 50; i++) {
+    var e = entries[i];
+    var id = e && typeof e.id === 'string' ? e.id : '';
+    if (!/^[A-Za-z0-9_-]{25,100}$/.test(id) || (e.access !== 'read' && e.access !== 'write')) {
+      if (id) out.failed.push(id.slice(0, 100));
+      continue;
+    }
+    var known = false;
+    for (var j = 0; j < list.length; j++) if (list[j].id === id) known = true;
+    if (known) continue;
+    var name;
+    try {
+      name = String(SpreadsheetApp.openById(id).getName());
+    } catch (err) {
+      out.failed.push(id);
+      continue;
+    }
+    var base = name.trim().slice(0, 64) || id.slice(0, 8);
+    var alias = base;
+    for (var n = 2; ; n++) {
+      try {
+        assertAliasFree_(list, alias, null);
+        break;
+      } catch (taken) {
+        var suffix = ' ' + n;
+        alias = base.slice(0, 64 - suffix.length) + suffix;
+      }
+    }
+    list.push({ id: id, name: name, alias: alias, access: e.access });
+    out.added++;
+  }
+  if (out.added > 0) saveAllowlist_(list);
+  return out;
+}
+
 function assertAliasFree_(list, alias, exceptId) {
   var lower = alias.toLowerCase();
   for (var i = 0; i < list.length; i++) {
@@ -363,13 +407,12 @@ function getScriptId_() {
  * Success body shared by code pairing and setup pairing (section 4.2 step 4): {account, scriptId, scriptName, proof}.
  * scriptName is always null: Apps Script has no scope-free way to read the project name (that needs Drive).
  */
-function pairAck_(secret, instanceId, ts) {
+function pairAck_(secret, instanceId, ts, allowlist) {
   var proof = hmacHex_(secret, 'v1\npair-ack\n' + instanceId + '\n' + ts);
   var account = Session.getEffectiveUser().getEmail();
-  return {
-    body: JSON.stringify({ ok: true, result: { account: account, scriptId: getScriptId_(), scriptName: null, proof: proof } }),
-    sig: null
-  };
+  var result = { account: account, scriptId: getScriptId_(), scriptName: null, proof: proof };
+  if (allowlist) result.allowlist = allowlist; // setup pair only (section 12)
+  return { body: JSON.stringify({ ok: true, result: result }), sig: null };
 }
 
 /** Pairing (section 4.2 steps 3-4; setup mode: section 9.3). */
@@ -461,7 +504,7 @@ function handleSetupPair_(req) {
     });
     addSetupConsumed_(hash);
     clearSetupAttempts_();
-    return pairAck_(req.secret, req.instanceId, req.ts);
+    return pairAck_(req.secret, req.instanceId, req.ts, applySetupSpreadsheets_(block.spreadsheets));
   });
 }
 

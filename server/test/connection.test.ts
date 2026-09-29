@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hmacHex } from "../src/adapters/apps-script/signing.js";
+import { PatService } from "../src/auth/pat.js";
 import { ConnectionRegistry } from "../src/connection/connection-registry.js";
 import { loadConfig } from "../src/config.js";
 import { GatewayError } from "../src/core/sheets/gateway.js";
@@ -29,6 +30,8 @@ interface ScriptState {
   setupToken: string | null;
   proofOk: boolean;
   scriptId: string | null;
+  /** Setup pair only: the allowlist field of an up-to-date script. */
+  allowlist?: unknown;
   account: string;
   error: string | null;
   calls: number;
@@ -48,6 +51,7 @@ function scriptFetch(state: Partial<ScriptState> = {}) {
       result: {
         account: st.account,
         ...(st.scriptId ? { scriptId: st.scriptId, scriptName: null } : {}),
+        ...(req.mode === "setup" && st.allowlist !== undefined ? { allowlist: st.allowlist } : {}),
         proof: hmacHex(st.proofOk ? req.secret : "B".repeat(43), `v1\npair-ack\n${req.instanceId}\n${req.ts}`),
       },
     });
@@ -380,5 +384,89 @@ describe("config", () => {
     expect(c).toMatchObject({ portPublic: 1, publicBaseUrl: "https://a.example.com", adminAllowedHosts: ["a.com", "b.com"], trustProxy: 2, logLevel: "debug" });
     expect(() => loadConfig({ PUBLIC_BASE_URL: "http://a.example.com" })).toThrow();
     expect(() => loadConfig({ PORT_ADMIN: "x" })).toThrow();
+  });
+});
+
+describe("connection registry: setup wizard (DESIGN.md 12)", () => {
+  const SHEET = "1" + "a".repeat(43);
+  const wizardRegistry = (fetchImpl: typeof fetch) => {
+    const pats = new PatService(store);
+    return { pats, ...registry(fetchImpl, { pats }) };
+  };
+  async function pairWizard(r: ConnectionRegistry, st: ScriptState, wizard = { spreadsheets: [SHEET], write: true }) {
+    const p = await r.startPending(OWNER, wizard);
+    st.setupToken = store.state.pendingConnections[p.id]!.setupToken;
+    await r.submitUrl(p.id, OWNER, URL_OK, "setup");
+    await r.pollOnce();
+    return p;
+  }
+
+  it("carries the spreadsheets, with the access from the checkbox, in the personalised Code.gs", async () => {
+    const { fetchImpl } = scriptFetch();
+    const { r } = wizardRegistry(fetchImpl);
+    const w = await r.startPending(OWNER, { spreadsheets: [SHEET], write: false });
+    expect(r.personalizedBundle(w.id, OWNER)).toContain(`"spreadsheets":[{"id":"${SHEET}","access":"read"}]`);
+    const plain = await r.startPending(OWNER);
+    expect(r.personalizedBundle(plain.id, OWNER)).not.toContain("spreadsheets");
+  });
+
+  it("creates one PAT on the first pairing, returns it once, and reports the allowlist result", async () => {
+    const { st, fetchImpl } = scriptFetch({ allowlist: { added: 1, failed: ["x".repeat(30)] } });
+    const { r, pats } = wizardRegistry(fetchImpl);
+    const p = await pairWizard(r, st);
+    expect(pats.list()).toHaveLength(0 + 1);
+    const first = r.getPending(p.id, OWNER)!;
+    expect(first).toMatchObject({ state: "connected", updated: false, allowlist: { added: 1, failed: ["x".repeat(30)] } });
+    expect(first.pat).toMatch(/^asmcp_pat_[A-Za-z0-9_-]{43}$/);
+    const rec = pats.verify(first.pat!)!;
+    expect(rec).toMatchObject({ userId: OWNER, connectionId: first.connection!.id, label: "Claude Code (tự tạo)", scopes: ["sheets.read", "sheets.write"] });
+    // a second status poll: no token, no second PAT
+    for (let i = 0; i < 3; i++) expect(r.getPending(p.id, OWNER)).toMatchObject({ state: "connected", pat: null });
+    await r.pollOnce();
+    expect(pats.list()).toHaveLength(1);
+    // the token is never persisted in the clear
+    expect(JSON.stringify(store.state)).not.toContain(first.pat!);
+  });
+
+  it("a re-pair of an existing script does not create a PAT", async () => {
+    const { st, fetchImpl } = scriptFetch({ scriptId: "SCRIPT-1" });
+    const { r, pats } = wizardRegistry(fetchImpl);
+    const a = await pairWizard(r, st);
+    expect(r.getPending(a.id, OWNER)!.pat).toMatch(/^asmcp_pat_/);
+    const b = await pairWizard(r, st);
+    expect(r.getPending(b.id, OWNER)).toMatchObject({ state: "connected", updated: true, pat: null });
+    expect(pats.list()).toHaveLength(1);
+    expect(Object.keys(store.state.connections)).toHaveLength(1);
+  });
+
+  it("only wizard pendings create a PAT", async () => {
+    const { st, fetchImpl } = scriptFetch();
+    const { r, pats } = wizardRegistry(fetchImpl);
+    const p = await r.startPending(OWNER);
+    st.setupToken = store.state.pendingConnections[p.id]!.setupToken;
+    await r.submitUrl(p.id, OWNER, URL_OK, "setup");
+    await r.pollOnce();
+    expect(r.getPending(p.id, OWNER)).toMatchObject({ state: "connected", pat: null, allowlist: null });
+    expect(pats.list()).toHaveLength(0);
+  });
+
+  it("tolerates a script without the allowlist field, or with a malformed one", async () => {
+    for (const allowlist of [undefined, null, "x", { added: "many" }]) {
+      const { st, fetchImpl } = scriptFetch({ allowlist });
+      const { r } = wizardRegistry(fetchImpl);
+      const p = await pairWizard(r, st);
+      expect(r.getPending(p.id, OWNER), String(allowlist)).toMatchObject({ state: "connected", allowlist: null });
+      await store.update((s) => {
+        s.connections = {};
+      });
+    }
+  });
+
+  it("the PAT is only visible to the user who started the pending", async () => {
+    const { st, fetchImpl } = scriptFetch();
+    const { r } = wizardRegistry(fetchImpl);
+    const p = await pairWizard(r, st);
+    expect(r.getPending(p.id, OTHER)).toBeUndefined();
+    expect(r.getPending(p.id, OWNER)!.pat).toMatch(/^asmcp_pat_/);
   });
 });
