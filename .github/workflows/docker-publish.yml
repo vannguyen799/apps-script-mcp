@@ -2,6 +2,8 @@ name: Docker image
 
 # main       -> ghcr.io/<owner>/gsheets-mcp:edge
 # tag v1.2.3 -> ghcr.io/<owner>/gsheets-mcp:1.2.3, :1.2, :latest
+# Also pushed to Docker Hub (<user>/gsheets-mcp, searchable in Docker Desktop) when the repo secrets
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are set; without them only GHCR is published.
 on:
   push:
     branches: [main]
@@ -11,6 +13,9 @@ on:
 permissions:
   contents: read
   packages: write
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   publish:
@@ -24,10 +29,17 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - if: env.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/gsheets-mcp
+          images: |
+            ghcr.io/${{ github.repository_owner }}/gsheets-mcp
+            name=docker.io/${{ env.DOCKERHUB_USERNAME }}/gsheets-mcp,enable=${{ env.DOCKERHUB_USERNAME != '' }}
           tags: |
             type=edge,branch=main
             type=semver,pattern={{version}}
@@ -42,3 +54,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Sync Docker Hub description
+        if: env.DOCKERHUB_USERNAME != '' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_USERNAME }}/gsheets-mcp
+          short-description: Let Claude read and write Google Sheets via your own Apps Script. No Google Cloud setup.
+          readme-filepath: docs/DOCKERHUB.md

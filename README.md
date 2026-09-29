@@ -23,16 +23,43 @@ Claude / MCP client ──OAuth 2.1 / PAT──▶ Docker MCP server ──HMAC�
 
 ### 1. Chạy MCP server
 
-Chỉ cần Docker, không cần Node.js hay Google SDK.
+Chỉ cần [Docker Desktop](https://www.docker.com/products/docker-desktop/), không cần Node.js hay Google SDK.
+Mở Docker Desktop, rồi chạy **một dòng**:
 
+**Windows** (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.ps1 | iex
+```
+
+**macOS / Linux**:
 ```bash
-mkdir gsheets-mcp && cd gsheets-mcp
+curl -fsSL https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.sh | sh
+```
+
+Script tự tải image, chạy container với đúng port và volume, rồi mở trình duyệt vào **http://localhost:8788**
+với setup token đã điền sẵn. Bạn chỉ cần đặt mật khẩu admin.
+Muốn nâng cấp, chạy lại đúng dòng đó; dữ liệu (pairing, mật khẩu, token) vẫn được giữ.
+
+<details>
+<summary>Cách khác: bấm trên giao diện Docker Desktop, hoặc dùng docker compose</summary>
+
+**Docker Desktop:**
+1. Tìm `vannguyen799/gsheets-mcp` và bấm **Run**.
+2. Mở **Optional settings** và điền:
+   - Ports: `8787` → `8787`, `8788` → `8788`.
+   - Volumes: tên `gsmcp-data`, đường dẫn trong container là `/data`.
+3. Xem setup token ở tab **Logs** của container (dòng `Setup token: …`).
+
+Lưu ý: giao diện Docker Desktop mở cổng admin 8788 cho cả mạng LAN (vẫn cần mật khẩu). Script một dòng ở trên chỉ mở
+cổng này cho `localhost`, nên an toàn hơn.
+
+**docker compose** (có tunnel Cloudflare kèm theo):
+```bash
 curl -fsSLO https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/docker-compose.yml
 docker compose up -d
 docker compose logs gsheets-mcp | grep "Setup token"
 ```
-
-Mở **http://localhost:8788**, nhập setup token và đặt mật khẩu admin.
+</details>
 
 ### 2. Triển khai Apps Script
 
@@ -117,7 +144,8 @@ cd server && npm ci && npm run build && npm test    # server, gồm test chéo v
 docker compose up -d --build                        # build image từ source
 ```
 
-Image được build tự động lên `ghcr.io/vannguyen799/gsheets-mcp` (`edge` từ `main`; `x.y.z` / `latest` khi push tag `vX.Y.Z`).
+Image được build tự động lên `ghcr.io/vannguyen799/gsheets-mcp`, và lên Docker Hub `vannguyen799/gsheets-mcp` khi repo có secret
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` (`edge` từ `main`; `x.y.z` / `latest` khi push tag `vX.Y.Z`).
 
 Kiến trúc: tầng tool/business chỉ phụ thuộc vào port `SheetsGateway`. Apps Script chỉ là một adapter, nên sau này có
 thể thay bằng Google OAuth hoặc Service Account mà không phải sửa tool.
