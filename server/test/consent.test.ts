@@ -244,6 +244,9 @@ describe("consent (DESIGN.md 9.4)", () => {
     expect(csp).toContain("default-src 'none'");
     expect(html).not.toContain("<script");
     expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(html).not.toMatch(/\sstyle=/); // style-src has no unsafe-inline, so a style attribute is blocked
+    // Chrome/Firefox send "Origin: null" for a form POST under no-referrer, and the POST handler rejects that origin
+    expect(res.headers.get("referrer-policy")).toBe("same-origin");
   });
 });
 

@@ -172,7 +172,8 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
       "Cache-Control": "no-store",
       "X-Frame-Options": "DENY",
       "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${styleNonce}'; frame-ancestors 'none'; base-uri 'none'`,
-      "Referrer-Policy": "no-referrer",
+      // Not "no-referrer": Chrome and Firefox then send "Origin: null" on the consent form POST, which originAllowed rejects.
+      "Referrer-Policy": "same-origin",
     });
   }
 
