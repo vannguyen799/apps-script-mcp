@@ -34,47 +34,27 @@ async function call(method: string, path: string, opts: { body?: unknown; cookie
 
 const cookieOf = (r: Resp): string => (r.headers.get("set-cookie") ?? "").split(";")[0]!;
 
-describe("first-run setup", () => {
+describe("owner account", () => {
   beforeEach(async () => {
     h = await makeHarness({ setup: false });
   });
 
-  it("requires setup; setup token is one-time, only its hash is stored, and the owner gets the chosen username", async () => {
-    expect((await call("GET", "/api/session")).json).toMatchObject({ setupRequired: true, authenticated: false });
-    const token = (await h.accounts.ensureSetupToken())!;
-    expect(token).toMatch(/^[A-Za-z0-9_-]{32}$/); // 24 bytes b64url
-    expect(JSON.stringify(h.store.state)).not.toContain(token);
-    expect(h.store.state.admin.setupTokenHash).toMatch(/^[0-9a-f]{64}$/);
-
-    expect((await call("POST", "/api/login", { body: { username: "admin", password: "whatever12345" } })).status).toBe(409);
-    expect((await call("POST", "/api/setup", { body: { setupToken: "bad", password: "longenough123" } })).status).toBe(401);
-    expect((await call("POST", "/api/setup", { body: { setupToken: token, password: "short" } })).json.error.code).toBe("WEAK_PASSWORD");
-    expect((await call("POST", "/api/setup", { body: { setupToken: token, username: "A B", password: "longenough123" } })).json.error.code).toBe("BAD_USERNAME");
-
-    const ok = await call("POST", "/api/setup", { body: { setupToken: token, username: "Boss.One", password: "longenough123" } });
+  it("has no setup flow: /api/setup is gone, the session says nothing about setup, and login works for the owner", async () => {
+    await h.accounts.bootstrapOwner("Boss.One", "longenough123");
+    expect((await call("GET", "/api/session")).json).toEqual({ authenticated: false, csrfToken: null, username: null });
+    expect((await call("POST", "/api/setup", { body: { setupToken: "x", password: "longenough123" } })).status).toBe(401); // no such route: falls through to the auth wall
+    expect(Object.values(h.store.state.users)).toHaveLength(1);
+    const ok = await call("POST", "/api/login", { body: { username: "boss.one", password: "longenough123" } });
     expect(ok.status).toBe(200);
-    expect(ok.json.csrfToken).toBeTruthy();
     const setCookie = ok.headers.get("set-cookie")!;
     expect(setCookie).toMatch(/^asmcp_admin=/);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
-    expect(setCookie).toContain("Path=/");
-    expect(h.store.state.admin.setupTokenHash).toBeNull();
     const owners = Object.values(h.store.state.users);
     expect(owners).toHaveLength(1);
     expect(owners[0]).toMatchObject({ username: "boss.one", role: "owner" });
     expect(owners[0]!.passwordHash).toMatch(/^scrypt\$32768\$8\$1\$/);
-
-    // token cannot be reused
-    expect((await call("POST", "/api/setup", { body: { setupToken: token, password: "another-long-pass" } })).status).toBe(409);
-    expect(h.accounts.needsSetup()).toBe(false);
-    expect(await h.accounts.ensureSetupToken()).toBeNull();
-  });
-
-  it("the username defaults to admin", async () => {
-    const token = (await h.accounts.ensureSetupToken())!;
-    expect((await call("POST", "/api/setup", { body: { setupToken: token, password: "longenough123" } })).status).toBe(200);
-    expect(Object.values(h.store.state.users)[0]!.username).toBe("admin");
+    expect(h.store.state).not.toHaveProperty("admin");
   });
 
   it("scrypt hashes verify and are salted", async () => {
@@ -174,7 +154,7 @@ describe("admin API security", () => {
     expect((await call("GET", "/api/status", { cookie: cookieOf(r) })).json.publicBaseUrl).toMatchObject({ value: "https://fixed.example.com", source: "env", editable: false });
   });
 
-  it("serves the UI with a CSP nonce, a username field on setup and no old single-link pairing UI", async () => {
+  it("serves the UI with a CSP nonce, a password-change form, no setup form and no old single-link pairing UI", async () => {
     const r = await fetch(`${h.adminUrl}/`);
     const csp = r.headers.get("content-security-policy")!;
     const html = await r.text();
@@ -182,7 +162,9 @@ describe("admin API security", () => {
     expect(html).toContain(`<script nonce="${nonce}">`);
     expect(html).not.toContain("{{NONCE}}");
     expect(csp).not.toContain("unsafe-inline");
-    expect(html).toMatch(/id="setup-user"[^>]*value="admin"/);
+    expect(html).toMatch(/id="login-user"[^>]*value="admin"/);
+    expect(html).not.toMatch(/setup-token|form-setup|#setup=/);
+    expect(html).toContain('id="form-pw"');
     expect(html).toContain("Thêm Apps Script");
     expect(html).not.toContain("Tạo mã pairing");
     expect(html).not.toContain("btn-unpair");

@@ -1,21 +1,31 @@
 import type { StateStore } from "../store/state-store.js";
 import { normalizeBaseUrl } from "../util/base-url.js";
 
-export type BaseUrlSource = "env" | "ui" | null;
+export type BaseUrlSource = "env" | "tunnel" | "ui" | null;
 
-/** The issuer / resource base: PUBLIC_BASE_URL (env, wins and locks the setting) or the value saved in the admin UI. */
+/**
+ * The issuer / resource base (DESIGN.md 11): PUBLIC_BASE_URL (env, wins and locks the setting) > the URL reported by the
+ * built-in tunnel (runtime only, never persisted) > the value saved in the admin UI.
+ */
 export class PublicBaseUrl {
   constructor(
     private readonly envValue: string | undefined,
     private readonly store: StateStore,
   ) {}
 
+  private tunnelUrl: string | undefined;
+
+  setTunnelUrl(url: string | undefined): void {
+    this.tunnelUrl = url;
+  }
+
   get(): string | undefined {
-    return this.envValue ?? this.store.state.publicBaseUrl ?? undefined;
+    return this.envValue ?? this.tunnelUrl ?? this.store.state.publicBaseUrl ?? undefined;
   }
 
   source(): BaseUrlSource {
     if (this.envValue) return "env";
+    if (this.tunnelUrl) return "tunnel";
     return this.store.state.publicBaseUrl ? "ui" : null;
   }
 

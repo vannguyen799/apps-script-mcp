@@ -22,6 +22,23 @@ docker run -d --name apps-script-mcp --restart unless-stopped \
 ```
 
 - `8787`: the MCP endpoint (`/mcp`) plus OAuth. This is the only port to expose through a tunnel.
-- `8788`: the admin UI. Keep it on localhost. The one-time setup token is printed in the container logs.
+- `8788`: the admin UI. Keep it on localhost. On first start the log prints `Admin login: admin / <random password>` once
+  (`docker logs apps-script-mcp`); change it under "Đổi mật khẩu" in `/account`. Lost it: stop the container, then
+  `docker run --rm -v asmcp-data:/data kortisol/apps-script-mcp node dist/cli.js reset-password`, and start it again.
+
+### Built-in tunnel (optional)
+
+Pass environment variables and the container exposes port 8787 itself; the URL is printed as `Public URL: https://.../mcp`.
+
+```bash
+# ngrok with a free static domain: a stable URL (recommended)
+docker run -d --name apps-script-mcp --restart unless-stopped -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data \
+  -e TUNNEL=ngrok -e NGROK_AUTHTOKEN=... -e NGROK_DOMAIN=my-name.ngrok-free.app kortisol/apps-script-mcp
+```
+
+- `TUNNEL=ngrok` needs `NGROK_AUTHTOKEN`; `NGROK_DOMAIN` is a bare hostname (your free static domain).
+- `TUNNEL=cloudflare` + `CLOUDFLARE_TUNNEL_TOKEN` + `PUBLIC_BASE_URL`: a Cloudflare named tunnel on your own domain.
+- `TUNNEL=cloudflare` alone: a quick tunnel for trying things out. Its URL changes on every restart, which breaks claude.ai connectors.
+- `PUBLIC_BASE_URL`, when set, wins over the tunnel's URL.
 
 Full guide, security model and Apps Script setup: https://github.com/vannguyen799/apps-script-mcp

@@ -137,8 +137,8 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const gateways = new Map<string, FakeGateway>();
   const ipLimiter = new FailureLimiter(5, 15 * 60_000);
   const userLimiter = new FailureLimiter(5, 15 * 60_000);
-  const accounts = new AccountService({ store, ipLimiter, userLimiter });
   const admin = new AdminAuth();
+  const accounts = new AccountService({ store, ipLimiter, userLimiter, adminSessions: admin });
   const pats = new PatService(store);
   const baseUrl = new PublicBaseUrl(opts.envBase, store);
   const registry = new ConnectionRegistry({
@@ -163,8 +163,7 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const password = "correct horse battery";
   let ownerId = "";
   if (opts.setup !== false) {
-    const t = await accounts.ensureSetupToken();
-    ownerId = (await accounts.completeSetup(t!, username, password)).id;
+    ownerId = (await accounts.bootstrapOwner(username, password))!.id;
   }
   const publicApp = createPublicApp({ provider, baseUrl, accounts, registry, pats, usage, ipLimiter, evaluatorAvailable: !!opts.withEvaluator, trustProxy: false });
   const adminApp = createAdminApp({ auth: admin, accounts, limiter: ipLimiter, registry, baseUrl, pats, provider, usage, allowedHosts: ["admin.internal"], trustProxy: false });

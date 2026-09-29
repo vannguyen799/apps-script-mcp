@@ -152,6 +152,17 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   );
 
   router.post(
+    "/api/password",
+    wrap(async (req, res) => {
+      const b = body(req);
+      const s = (req as SessionRequest).pubSession!;
+      await deps.accounts.changePassword(s.user.id, b.currentPassword, b.newPassword, b.confirmPassword, ipOf(req), { publicSessionId: s.id });
+      log.info("password_changed", { via: "account" });
+      res.json({ ok: true });
+    }),
+  );
+
+  router.post(
     "/logout-all",
     authedOnly(async (req, res) => {
       await deps.accounts.destroyUserSessions(me(req));

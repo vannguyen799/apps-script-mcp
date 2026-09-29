@@ -1,15 +1,13 @@
 import { createHmac, randomUUID } from "node:crypto";
 import type { PersistedState, StateStore, StoredUser, UserRole } from "../store/state-store.js";
-import { randomB64Url, safeEqualStr, sha256Hex } from "../util/crypto.js";
+import { randomB64Url, sha256Hex } from "../util/crypto.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
-import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword, normalizeUsername, verifyAgainstDummy, verifyPasswordHash } from "./password.js";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, generatePassword, hashPassword, normalizeUsername, verifyAgainstDummy, verifyPasswordHash } from "./password.js";
 
 export const SESSION_TTL_MS = 30 * 24 * 3600_000;
 const MAX_SESSIONS_PER_USER = 50;
 
 export type AccountErrorCode =
-  | "BAD_SETUP_TOKEN"
-  | "ALREADY_SETUP"
   | "WEAK_PASSWORD"
   | "BAD_USERNAME"
   | "BAD_CREDENTIALS"
@@ -48,6 +46,8 @@ export interface AccountServiceDeps {
   /** 5 failures / 15 min per username. */
   userLimiter: FailureLimiter;
   now?: () => number;
+  /** The admin UI's in-memory sessions (AdminAuth fits), so a password change can end them too. */
+  adminSessions?: { destroyUserSessions(userId: string, exceptId?: string): void };
 }
 
 const view = (u: StoredUser): UserView => ({ id: u.id, username: u.username, role: u.role, createdAt: u.createdAt });
@@ -70,7 +70,10 @@ function checkUsername(username: unknown): string {
   return u;
 }
 
-/** The owner account: first-run setup, env bootstrap, public sessions and login (DESIGN.md 9.1, 10.3). */
+/** The one line that tells the owner how to log in; printed to stdout only, never logged. */
+export const adminLoginLine = (username: string, password: string): string => `Admin login: ${username} / ${password}  (đổi mật khẩu trong /account)`;
+
+/** The owner account: bootstrap, password change, public sessions and login (DESIGN.md 9.1, 10.3). */
 export class AccountService {
   private readonly store: StateStore;
   private readonly now: () => number;
@@ -100,56 +103,52 @@ export class AccountService {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
-  // ---- first-run setup ---------------------------------------------------
+  // ---- bootstrap ---------------------------------------------------------
   /**
-   * When no owner exists, mints a fresh one-time setup token, persists only its hash and returns the plaintext for
-   * the caller to print once. Called on every start while unconfigured.
+   * DESIGN.md 10.3: creates the owner when none exists, from ADMIN_USERNAME / ADMIN_PASSWORD; without a password a random one
+   * is generated and handed to `print` once (never to the logger). Later starts ignore the pair (a password is never overwritten).
+   * A bad username or too-short password is an error, so the caller aborts startup. Returns the new owner, or null when one exists.
    */
-  async ensureSetupToken(): Promise<string | null> {
-    if (!this.needsSetup()) return null;
-    const token = randomB64Url(24);
-    await this.store.update((s) => {
-      s.admin.setupTokenHash = sha256Hex(token);
-    });
-    return token;
-  }
-
-  async completeSetup(setupToken: string, username: string, password: string): Promise<StoredUser> {
-    if (!this.needsSetup()) throw new AccountError("ALREADY_SETUP", "Đã thiết lập chủ sở hữu.");
-    const hash = this.store.state.admin.setupTokenHash;
-    if (typeof setupToken !== "string" || !hash || !safeEqualStr(sha256Hex(setupToken.trim()), hash)) {
-      throw new AccountError("BAD_SETUP_TOKEN", "Setup token không hợp lệ.");
-    }
-    const name = checkUsername(username);
-    checkPassword(password);
-    const passwordHash = await hashPassword(password);
-    const user: StoredUser = { id: randomUUID(), username: name, passwordHash, role: "owner", createdAt: this.now(), lastConnectionId: null };
-    await this.store.update((s) => {
-      if (Object.values(s.users).some((u) => u.role === "owner")) throw new AccountError("ALREADY_SETUP", "Đã thiết lập chủ sở hữu.");
-      s.users[user.id] = user;
-      s.admin.setupTokenHash = null;
-    });
-    return user;
-  }
-
-  /**
-   * DESIGN.md 10.3: creates the owner from ADMIN_USERNAME / ADMIN_PASSWORD, but only when no owner exists. Later starts
-   * ignore the pair (a password is never overwritten). A too-short password is an error, so the caller aborts startup.
-   * Returns the created user, or null when an owner already exists.
-   */
-  async bootstrapOwner(username: string, password: string): Promise<StoredUser | null> {
+  async bootstrapOwner(username: string, password: string | undefined, print: (line: string) => void = () => {}): Promise<StoredUser | null> {
     if (!this.needsSetup()) return null;
     const name = normalizeUsername(username);
     if (!name) throw new Error("ADMIN_USERNAME must be 3-32 characters: lowercase letters, digits, dot, underscore or dash.");
-    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) throw new Error(`ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`);
-    if (password.length > MAX_PASSWORD_LENGTH) throw new Error("ADMIN_PASSWORD is too long.");
-    const passwordHash = await hashPassword(password);
+    if (password !== undefined) {
+      if (password.length < MIN_PASSWORD_LENGTH) throw new Error(`ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      if (password.length > MAX_PASSWORD_LENGTH) throw new Error("ADMIN_PASSWORD is too long.");
+    }
+    const generatedPassword = password === undefined ? generatePassword() : undefined;
+    const passwordHash = await hashPassword(password ?? generatedPassword!);
     const user: StoredUser = { id: randomUUID(), username: name, passwordHash, role: "owner", createdAt: this.now(), lastConnectionId: null };
     await this.store.update((s) => {
       s.users[user.id] = user;
-      s.admin.setupTokenHash = null; // no setup token is needed (or printed) once the owner exists
     });
+    if (generatedPassword) print(adminLoginLine(name, generatedPassword));
     return user;
+  }
+
+  /**
+   * Changes the password after checking the current one (same rate limits as login). Every other session of the user ends:
+   * public sessions except `keep.publicSessionId`, admin UI sessions except `keep.adminSessionId`.
+   */
+  async changePassword(userId: string, current: unknown, next: unknown, confirm: unknown, ip: string, keep: { publicSessionId?: string; adminSessionId?: string } = {}): Promise<void> {
+    const user = this.getUser(userId);
+    if (!user) throw new AccountError("NOT_FOUND", "Không tìm thấy tài khoản.");
+    checkPassword(next);
+    if (next !== confirm) throw new AccountError("WEAK_PASSWORD", "Mật khẩu nhập lại không khớp.");
+    try {
+      await this.login(user.username, current, ip);
+    } catch (e) {
+      if (e instanceof AccountError && e.code === "BAD_CREDENTIALS") throw new AccountError("FORBIDDEN", "Mật khẩu hiện tại không đúng."); // not 401: the UIs read that as "logged out"
+      throw e;
+    }
+    const passwordHash = await hashPassword(next);
+    const keepHash = keep.publicSessionId ? sha256Hex(keep.publicSessionId) : null;
+    await this.store.update((s) => {
+      s.users[userId]!.passwordHash = passwordHash;
+      for (const [h, v] of Object.entries(s.sessions)) if (v.userId === userId && h !== keepHash) delete s.sessions[h];
+    });
+    this.deps.adminSessions?.destroyUserSessions(userId, keep.adminSessionId);
   }
 
   // ---- login -------------------------------------------------------------
@@ -222,4 +221,20 @@ export class AccountService {
   private pruneSessions(s: PersistedState, t: number): void {
     for (const [h, v] of Object.entries(s.sessions)) if (v.expiresAt <= t) delete s.sessions[h];
   }
+}
+
+/**
+ * The `reset-password` CLI (lost password): a new random password for the owner, every session removed. Returns what to print,
+ * or null when there is no owner yet. The stored document is rewritten as a whole, so the server must not be running.
+ */
+export async function resetOwnerPassword(store: StateStore): Promise<{ username: string; password: string } | null> {
+  const owner = Object.values(store.state.users).find((u) => u.role === "owner");
+  if (!owner) return null;
+  const password = generatePassword();
+  const passwordHash = await hashPassword(password);
+  await store.update((s) => {
+    s.users[owner.id]!.passwordHash = passwordHash;
+    s.sessions = {};
+  });
+  return { username: owner.username, password };
 }

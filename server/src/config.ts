@@ -2,6 +2,9 @@ import { normalizeBaseUrl } from "./util/base-url.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+/** DESIGN.md 11: the built-in tunnel, undefined when TUNNEL is unset or "off". */
+export type TunnelConfig = { kind: "cloudflare"; token: string | undefined } | { kind: "ngrok"; authtoken: string; domain: string | undefined };
+
 export interface Config {
   portPublic: number;
   portAdmin: number;
@@ -18,6 +21,7 @@ export interface Config {
   /** DESIGN.md 10.3: owner bootstrap. The password is only used when no owner exists yet. */
   adminUsername: string;
   adminPassword: string | undefined;
+  tunnel: TunnelConfig | undefined;
 }
 
 function port(v: string | undefined, def: number, name: string): number {
@@ -36,6 +40,27 @@ function parseTrustProxy(v: string | undefined): boolean | number | string {
   return v.trim();
 }
 
+const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+
+function loadTunnel(env: NodeJS.ProcessEnv, publicBaseUrl: string | undefined): TunnelConfig | undefined {
+  const kind = (env.TUNNEL ?? "").trim().toLowerCase();
+  if (kind === "" || kind === "off") return undefined;
+  const set = (v: string | undefined): string | undefined => (v && v.trim() !== "" ? v.trim() : undefined);
+  if (kind === "cloudflare") {
+    const token = set(env.CLOUDFLARE_TUNNEL_TOKEN);
+    if (token && !publicBaseUrl) throw new Error("TUNNEL=cloudflare with CLOUDFLARE_TUNNEL_TOKEN needs PUBLIC_BASE_URL set to the tunnel's hostname (https://...)");
+    return { kind, token };
+  }
+  if (kind === "ngrok") {
+    const authtoken = set(env.NGROK_AUTHTOKEN);
+    if (!authtoken) throw new Error("TUNNEL=ngrok requires NGROK_AUTHTOKEN");
+    const domain = set(env.NGROK_DOMAIN);
+    if (domain && !HOSTNAME.test(domain)) throw new Error("NGROK_DOMAIN must be a bare hostname such as my-name.ngrok-free.app (no https://, port or path)");
+    return { kind, authtoken, domain };
+  }
+  throw new Error("TUNNEL must be off|cloudflare|ngrok");
+}
+
 /** The only place in the code base that reads process.env. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   let publicBaseUrl: string | undefined;
@@ -48,6 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!["debug", "info", "warn", "error"].includes(level)) throw new Error("LOG_LEVEL must be debug|info|warn|error");
   const databaseUrl = env.DATABASE_URL?.trim();
   if (databaseUrl && !/^postgres(ql)?:\/\//i.test(databaseUrl)) throw new Error("DATABASE_URL must be a postgres:// or postgresql:// URL");
+  const tunnel = loadTunnel(env, publicBaseUrl);
   return {
     portPublic: port(env.PORT_PUBLIC, 8787, "PORT_PUBLIC"),
     portAdmin: port(env.PORT_ADMIN, 8788, "PORT_ADMIN"),
@@ -58,10 +84,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .map((h) => h.trim().toLowerCase())
       .filter(Boolean),
     logLevel: level as LogLevel,
-    trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    // A built-in tunnel is a local proxy: trust X-Forwarded-For from loopback only (unless TRUST_PROXY says otherwise).
+    trustProxy: tunnel && (env.TRUST_PROXY ?? "").trim() === "" ? "loopback" : parseTrustProxy(env.TRUST_PROXY),
     appsScriptBundlePath: env.APPS_SCRIPT_BUNDLE_PATH && env.APPS_SCRIPT_BUNDLE_PATH.trim() !== "" ? env.APPS_SCRIPT_BUNDLE_PATH.trim() : "/app/apps-script/Code.gs",
     databaseUrl: databaseUrl ? databaseUrl : undefined,
     adminUsername: env.ADMIN_USERNAME && env.ADMIN_USERNAME.trim() !== "" ? env.ADMIN_USERNAME.trim() : "admin",
     adminPassword: env.ADMIN_PASSWORD !== undefined && env.ADMIN_PASSWORD !== "" ? env.ADMIN_PASSWORD : undefined,
+    tunnel,
   };
 }

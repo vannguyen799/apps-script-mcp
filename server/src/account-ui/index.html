@@ -135,6 +135,21 @@ ol{padding-left:20px;margin:6px 0}
     </section>
 
     <section class="card">
+      <h2>Đổi mật khẩu</h2>
+      <form id="form-pw">
+        <label for="pw-cur">Mật khẩu hiện tại</label>
+        <input id="pw-cur" type="password" autocomplete="current-password" required>
+        <label for="pw-new">Mật khẩu mới (tối thiểu 10 ký tự)</label>
+        <input id="pw-new" type="password" autocomplete="new-password" minlength="10" required>
+        <label for="pw-new2">Nhập lại mật khẩu mới</label>
+        <input id="pw-new2" type="password" autocomplete="new-password" minlength="10" required>
+        <div class="row"><button class="primary" type="submit">Đổi mật khẩu</button></div>
+        <div id="pw-msg" class="msg hidden"></div>
+      </form>
+      <p class="muted">Các phiên đăng nhập khác của bạn sẽ bị đăng xuất.</p>
+    </section>
+
+    <section class="card">
       <h2>Lượt dùng 30 ngày</h2>
       <p class="muted">Số lần gọi tool mỗi ngày (giờ UTC), theo từng tool. Chỉ đếm số lượt và số lỗi, không ghi dữ liệu bảng tính, câu tìm kiếm hay mã.</p>
       <table><thead><tr><th>Ngày</th><th>Tool</th><th>Lượt</th><th>Lỗi</th></tr></thead><tbody id="usage-list"></tbody></table>
@@ -328,6 +343,16 @@ $("form-login").addEventListener("submit", function (ev) {
   api("POST", "/account/login", { username: $("login-user").value, password: $("login-pw").value })
     .then(function () { $("login-pw").value = ""; return route(); })
     .catch(function (e) { notice(e.message); });
+});
+
+function pwMsg(msg, ok) { var e = $("pw-msg"); e.textContent = msg; e.className = "msg " + (ok ? "ok" : "err"); }
+$("form-pw").addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  var cur = $("pw-cur"), nw = $("pw-new"), nw2 = $("pw-new2");
+  if (nw.value !== nw2.value) { pwMsg("Mật khẩu nhập lại không khớp.", false); return; }
+  api("POST", "/account/api/password", { currentPassword: cur.value, newPassword: nw.value, confirmPassword: nw2.value })
+    .then(function () { cur.value = ""; nw.value = ""; nw2.value = ""; pwMsg("Đã đổi mật khẩu.", true); })
+    .catch(function (e) { pwMsg(e.message, false); });
 });
 
 function doLogout(path) { api("POST", path).then(function () { csrf = null; stopAdd(); pendingId = null; show("add-card", false); return route(); }).catch(function (e) { notice(e.message); }); }

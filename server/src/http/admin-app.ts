@@ -24,7 +24,7 @@ const DEFAULT_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 export interface AdminAppDeps {
   auth: AdminAuth;
   accounts: AccountService;
-  /** Shared per-IP failure counter (login, setup). */
+  /** Shared per-IP failure counter (login, password change). */
   limiter: FailureLimiter;
   registry: ConnectionRegistry;
   baseUrl: PublicBaseUrl;
@@ -131,11 +131,6 @@ export function createAdminApp(deps: AdminAppDeps): Express {
   const ipOf = (req: Request) => req.ip ?? "unknown";
   const body = (req: Request): Record<string, unknown> => (req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {});
 
-  const assertNotBlocked = (req: Request, scope: string) => {
-    const wait = deps.limiter.blockedFor(`${scope}:${ipOf(req)}`);
-    if (wait > 0) throw new HttpError(429, "TOO_MANY_ATTEMPTS", `Thử sai quá nhiều lần. Hãy thử lại sau ${Math.ceil(wait / 60)} phút.`, wait);
-  };
-
   const wrap =
     (fn: (req: SessionRequest, res: Response) => Promise<void> | void): RequestHandler =>
     (req, res, next) => {
@@ -149,32 +144,13 @@ export function createAdminApp(deps: AdminAppDeps): Express {
       const s = currentSession(req);
       const u = s ? deps.accounts.getUser(s.userId) : undefined;
       const ok = !!s && u?.role === "owner";
-      res.json({ setupRequired: deps.accounts.needsSetup(), authenticated: ok, csrfToken: ok ? s!.csrf : null, username: ok ? u!.username : null });
-    }),
-  );
-
-  api.post(
-    "/setup",
-    wrap(async (req, res) => {
-      assertNotBlocked(req, "setup");
-      const { setupToken, username, password } = body(req);
-      try {
-        const user = await deps.accounts.completeSetup(String(setupToken ?? ""), typeof username === "string" && username.trim() !== "" ? username : "admin", String(password ?? ""));
-        const s = deps.auth.createSession(user.id);
-        setSessionCookie(req, res, s);
-        log.info("admin_setup_completed");
-        res.json({ ok: true, csrfToken: s.csrf });
-      } catch (e) {
-        if (e instanceof AccountError && e.code === "BAD_SETUP_TOKEN") deps.limiter.recordFailure(`setup:${ipOf(req)}`);
-        throw e;
-      }
+      res.json({ authenticated: ok, csrfToken: ok ? s!.csrf : null, username: ok ? u!.username : null });
     }),
   );
 
   api.post(
     "/login",
     wrap(async (req, res) => {
-      if (deps.accounts.needsSetup()) throw new HttpError(409, "SETUP_REQUIRED", "Hãy hoàn tất thiết lập lần đầu trước.");
       const { username, password } = body(req);
       try {
         const user = await deps.accounts.login(username, password, ipOf(req), { requireRole: "owner" });
@@ -206,6 +182,16 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     wrap((req, res) => {
       deps.auth.destroySession(req.session?.id);
       clearCookie(res);
+      res.json({ ok: true });
+    }),
+  );
+
+  api.post(
+    "/password",
+    wrap(async (req, res) => {
+      const { currentPassword, newPassword, confirmPassword } = body(req);
+      await deps.accounts.changePassword(ownerId(req), currentPassword, newPassword, confirmPassword, ipOf(req), { adminSessionId: req.session!.id });
+      log.info("password_changed", { via: "admin" });
       res.json({ ok: true });
     }),
   );

@@ -46,8 +46,7 @@ async function accountsWith(now = () => Date.now(), ipMax = 5, userMax = 5) {
   const store = new StateStore(dir);
   await store.load();
   const accounts = new AccountService({ store, ipLimiter: new FailureLimiter(ipMax, 15 * 60_000, now), userLimiter: new FailureLimiter(userMax, 15 * 60_000, now), now });
-  const t = await accounts.ensureSetupToken();
-  await accounts.completeSetup(t!, "boss", "boss-password-1");
+  await accounts.bootstrapOwner("boss", "boss-password-1");
   return { accounts, store, dir };
 }
 

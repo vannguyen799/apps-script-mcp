@@ -46,7 +46,7 @@ export class AdminAuth {
     if (id) this.sessions.delete(id);
   }
 
-  destroyUserSessions(userId: string): void {
-    for (const [id, s] of this.sessions) if (s.userId === userId) this.sessions.delete(id);
+  destroyUserSessions(userId: string, exceptId?: string): void {
+    for (const [id, s] of this.sessions) if (s.userId === userId && id !== exceptId) this.sessions.delete(id);
   }
 }

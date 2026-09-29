@@ -1,4 +1,4 @@
-import { randomBytes, scrypt as scryptCb } from "node:crypto";
+import { randomBytes, randomInt, scrypt as scryptCb } from "node:crypto";
 import { safeEqualStr } from "../util/crypto.js";
 
 const N = 2 ** 15;
@@ -10,6 +10,15 @@ const SALT_BYTES = 16;
 const MAXMEM = 128 * 1024 * 1024;
 export const MIN_PASSWORD_LENGTH = 10;
 export const MAX_PASSWORD_LENGTH = 1024;
+
+const PASSWORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+/** A random 20-character password from [A-Za-z0-9] (about 119 bits). */
+export function generatePassword(): string {
+  let out = "";
+  for (let i = 0; i < 20; i++) out += PASSWORD_ALPHABET[randomInt(PASSWORD_ALPHABET.length)];
+  return out;
+}
 
 function scrypt(password: string, salt: Buffer, n: number, r: number, p: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {

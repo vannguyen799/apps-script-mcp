@@ -114,7 +114,6 @@ export type UsageState = Record<string, Record<string, { calls: number; errors: 
 export interface PersistedState {
   version: 2;
   instanceId: string;
-  admin: { setupTokenHash: string | null };
   publicBaseUrl: string | null;
   users: Record<string, StoredUser>;
   sessions: Record<string, StoredSession>;
@@ -136,7 +135,6 @@ export function emptyState(): PersistedState {
   return {
     version: 2,
     instanceId: randomUUID(),
-    admin: { setupTokenHash: null },
     publicBaseUrl: null,
     users: {},
     sessions: {},
@@ -167,7 +165,6 @@ export function migrateV1(v1: Obj, now: number = Date.now()): PersistedState {
   const out: PersistedState = {
     ...base,
     instanceId: typeof v1.instanceId === "string" ? v1.instanceId : base.instanceId,
-    admin: { setupTokenHash: typeof admin.setupTokenHash === "string" ? admin.setupTokenHash : null },
     publicBaseUrl: typeof v1.publicBaseUrl === "string" ? v1.publicBaseUrl : null,
     oauth: { ...base.oauth, clients: (isObj(oauth.clients) ? oauth.clients : {}) as Record<string, StoredClient> },
   };
@@ -176,7 +173,6 @@ export function migrateV1(v1: Obj, now: number = Date.now()): PersistedState {
   if (typeof admin.passwordHash === "string") {
     ownerId = randomUUID();
     out.users[ownerId] = { id: ownerId, username: "admin", passwordHash: admin.passwordHash, role: "owner", createdAt: now, lastConnectionId: null };
-    out.admin.setupTokenHash = null;
   }
 
   const link = isObj(v1.link) ? v1.link : null;
@@ -215,13 +211,11 @@ export function migrateV1(v1: Obj, now: number = Date.now()): PersistedState {
 function normalizeV2(parsed: Obj): PersistedState {
   const base = emptyState();
   const oauth = isObj(parsed.oauth) ? parsed.oauth : {};
-  const admin = isObj(parsed.admin) ? parsed.admin : {};
   const out: PersistedState = {
     ...base,
     ...(parsed as Partial<PersistedState>),
     version: 2,
     instanceId: typeof parsed.instanceId === "string" ? parsed.instanceId : base.instanceId,
-    admin: { setupTokenHash: typeof admin.setupTokenHash === "string" ? admin.setupTokenHash : null },
     users: (parsed.users ?? {}) as PersistedState["users"],
     sessions: (parsed.sessions ?? {}) as PersistedState["sessions"],
     connections: (parsed.connections ?? {}) as PersistedState["connections"],
@@ -231,6 +225,7 @@ function normalizeV2(parsed: Obj): PersistedState {
     usage: (isObj(parsed.usage) ? parsed.usage : {}) as UsageState,
   };
   delete (out as { invites?: unknown }).invites; // invites no longer exist
+  delete (out as { admin?: unknown }).admin; // the setup-token hash no longer exists
   return out;
 }
 
@@ -304,7 +299,7 @@ export class StateStore {
       return;
     }
     const { state, migrated } = upgradeState(raw);
-    const hadInvites = isObj(raw) && raw.invites !== undefined;
+    const hadStaleKeys = isObj(raw) && (raw.invites !== undefined || (raw.version === STATE_VERSION && raw.admin !== undefined)); // stale keys to drop
     const removed = pruneToOwner(state);
     this.data = state;
     if (migrated && !imported) {
@@ -314,7 +309,7 @@ export class StateStore {
     }
     if (imported) this.log.info("state_imported_from_file", { migrated });
     if (removed > 0) this.log.info("users_pruned", { count: removed });
-    if (imported || migrated || removed > 0 || hadInvites) await this.flush();
+    if (imported || migrated || removed > 0 || hadStaleKeys) await this.flush();
   }
 
   async update(mutator: (s: PersistedState) => void): Promise<void> {

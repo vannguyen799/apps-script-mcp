@@ -22,6 +22,10 @@ services:
       # Optional PostgreSQL instead of the JSON file in /data (start it with:  docker compose --profile postgres up -d).
       # One server instance per database. The first start imports an existing /data/state.json once.
       # DATABASE_URL: postgres://asmcp:${POSTGRES_PASSWORD:-change-me}@postgres:5432/asmcp
+      # Built-in tunnel (no extra service). Put these in .env instead; see .env.example.
+      # TUNNEL: ngrok                         # off | cloudflare | ngrok
+      # NGROK_AUTHTOKEN: ...
+      # NGROK_DOMAIN: my-name.ngrok-free.app  # free static domain = stable URL
 
   # Optional PostgreSQL for the server state (profile "postgres"). Not published on the host: only the compose network reaches it.
   # Set POSTGRES_PASSWORD in .env, and uncomment DATABASE_URL above (or put it in .env).
@@ -40,27 +44,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # Named Cloudflare tunnel -> http://apps-script-mcp:8787. Start with:  docker compose --profile tunnel up -d
-  # Configure the tunnel's public hostname in the Cloudflare Zero Trust dashboard to point at http://apps-script-mcp:8787,
-  # then put that stable https URL in PUBLIC_BASE_URL (.env). Set TRUST_PROXY=1 so per-IP rate limits see real client IPs.
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
-    depends_on:
-      - apps-script-mcp
-
-  # Quick-tunnel alternative (no account, no token). WARNING: the trycloudflare.com URL is random and CHANGES on every
-  # restart. The URL is the OAuth issuer, so every OAuth connection (claude.ai) breaks and must be re-added, and you
-  # must update PUBLIC_BASE_URL each time. Fine for a quick try; use the named tunnel above for anything lasting.
-  # cloudflared-quick:
-  #   image: cloudflare/cloudflared:latest
-  #   profiles: ["tunnel-quick"]
-  #   command: tunnel --no-autoupdate --url http://apps-script-mcp:8787
-  #   depends_on:
-  #     - apps-script-mcp
 
 volumes:
   asmcp-data:

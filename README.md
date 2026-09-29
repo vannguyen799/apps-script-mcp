@@ -39,8 +39,14 @@ irm https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.sh | sh
 ```
 
-Script tự tải image, chạy container với đúng port và volume, rồi mở trình duyệt vào **http://localhost:8788**
-với setup token đã điền sẵn. Bạn chỉ cần chọn tên đăng nhập (mặc định `admin`) và đặt mật khẩu: đây là tài khoản **chủ sở hữu**.
+Script tự tải image, chạy container với đúng port và volume, in ra dòng đăng nhập rồi mở trình duyệt vào **http://localhost:8788**:
+```
+Admin login: admin / <mật khẩu ngẫu nhiên 20 ký tự>  (đổi mật khẩu trong /account)
+```
+Đây là tài khoản **chủ sở hữu**, tạo ở lần chạy đầu tiên. Hãy đổi mật khẩu ngay ở mục *Đổi mật khẩu* của `/account` hoặc trang admin.
+Chạy lại script khi đã có tài khoản thì không có dòng đó và script in "Dùng tài khoản admin hiện có".
+Nếu shell đã đặt sẵn `TUNNEL`, `NGROK_AUTHTOKEN`, `NGROK_DOMAIN`, `CLOUDFLARE_TUNNEL_TOKEN` hoặc `PUBLIC_BASE_URL`, script chuyển chúng
+vào container (xem [Public qua tunnel](#public-qua-tunnel)), rồi in URL public (`Public URL: …`) và mở `/account` trên URL đó.
 Muốn nâng cấp, chạy lại đúng dòng đó; dữ liệu (tài khoản, kết nối Apps Script, token) vẫn được giữ. Bản cũ (một script duy nhất)
 tự được chuyển sang định dạng mới: mật khẩu admin thành tài khoản `admin`, script cũ thành một kết nối, token và PAT cũ vẫn dùng được
 (bản sao file cũ nằm ở `state.json.v1.bak` trong volume `/data`).
@@ -53,16 +59,16 @@ tự được chuyển sang định dạng mới: mật khẩu admin thành tài
 2. Mở **Optional settings** và điền:
    - Ports: `8787` → `8787`, `8788` → `8788`.
    - Volumes: tên `asmcp-data`, đường dẫn trong container là `/data`.
-3. Xem setup token ở tab **Logs** của container (dòng `Setup token: …`).
+3. Xem dòng đăng nhập ở tab **Logs** của container (`Admin login: admin / …`).
 
 Lưu ý: giao diện Docker Desktop mở cổng admin 8788 cho cả mạng LAN (vẫn cần mật khẩu). Script một dòng ở trên chỉ mở
 cổng này cho `localhost`, nên an toàn hơn.
 
-**docker compose** (có tunnel Cloudflare kèm theo):
+**docker compose**:
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/docker-compose.yml
 docker compose up -d
-docker compose logs apps-script-mcp | grep "Setup token"
+docker compose logs apps-script-mcp | grep "Admin login"
 ```
 </details>
 
@@ -71,12 +77,12 @@ docker compose logs apps-script-mcp | grep "Setup token"
 Mở trang tài khoản và đăng nhập bằng tài khoản chủ sở hữu vừa tạo:
 
 - máy local: **http://localhost:8787/account**;
-- khi đã có tunnel: `https://<domain>/account` (đặt `PUBLIC_BASE_URL` hoặc nhập ở trang admin, xem [Public qua tunnel](#public-qua-tunnel)).
+- khi đã có tunnel: `https://<domain>/account` (URL public lấy từ tunnel tích hợp, `PUBLIC_BASE_URL` hoặc trang admin, xem [Public qua tunnel](#public-qua-tunnel)).
 
 Server này dành cho **một người dùng**: chỉ có tài khoản chủ sở hữu, không có thành viên hay lời mời. Nếu bản cũ của bạn từng có thành viên,
 khi khởi động lần đầu với bản mới, các thành viên cùng kết nối, token và PAT của họ bị xóa (log ghi `users_pruned` kèm số lượng).
 
-Muốn tạo sẵn tài khoản chủ sở hữu mà không qua setup token (ví dụ triển khai tự động), xem [Tạo chủ sở hữu từ biến môi trường](#tạo-chủ-sở-hữu-từ-biến-môi-trường).
+Muốn tự chọn mật khẩu ban đầu thay vì mật khẩu ngẫu nhiên (ví dụ triển khai tự động), xem [Tạo chủ sở hữu từ biến môi trường](#tạo-chủ-sở-hữu-từ-biến-môi-trường).
 
 ### 3. Kết nối một Apps Script (dán 1 file, không nhập mã)
 
@@ -175,19 +181,35 @@ DATABASE_URL=postgres://asmcp:mat-khau@postgres:5432/asmcp
 
 Với docker compose có sẵn một PostgreSQL tùy chọn (profile `postgres`, không mở cổng ra ngoài): đặt `POSTGRES_PASSWORD` và `DATABASE_URL` trong `.env` (xem `.env.example`), rồi chạy `docker compose --profile postgres up -d`.
 
-## Tạo chủ sở hữu từ biến môi trường
+## Tài khoản chủ sở hữu
 
-Thay cho bước setup token ở trang admin, có thể đặt trong `.env`:
+Ở lần khởi động đầu, khi chưa có chủ sở hữu, server tự tạo tài khoản: tên đăng nhập `ADMIN_USERNAME` (mặc định `admin`) và mật khẩu
+`ADMIN_PASSWORD` nếu bạn đặt, nếu không thì một mật khẩu ngẫu nhiên 20 ký tự. Mật khẩu ngẫu nhiên được in **một lần** ra stdout của
+container (dòng `Admin login: <tên> / <mật khẩu>`, xem bằng `docker logs apps-script-mcp`), không đi qua logger, và chỉ lưu hash scrypt.
 
 ```env
 ADMIN_USERNAME=admin        # mặc định admin
-ADMIN_PASSWORD=mat-khau-dai-it-nhat-10-ky-tu
+ADMIN_PASSWORD=mat-khau-dai-it-nhat-10-ky-tu   # bỏ trống = mật khẩu ngẫu nhiên; khi đặt thì không in ra
 ```
 
-- Chỉ dùng khi **chưa có** chủ sở hữu. Khi đó server tạo tài khoản, không in setup token.
-- Các lần khởi động sau bỏ qua hai biến này và **không bao giờ ghi đè** mật khẩu (đổi mật khẩu ở `/account` hay trang admin không bị ảnh hưởng).
-- Mật khẩu ngắn hơn 10 ký tự thì server báo lỗi và không khởi động.
-- Sau khi vào được, nên đổi mật khẩu trên giao diện rồi xóa `ADMIN_PASSWORD` khỏi `.env`.
+- Chỉ dùng khi **chưa có** chủ sở hữu. Các lần khởi động sau bỏ qua hai biến này và **không bao giờ ghi đè** mật khẩu.
+- `ADMIN_PASSWORD` ngắn hơn 10 ký tự thì server báo lỗi và không khởi động.
+- **Đổi mật khẩu:** mục *Đổi mật khẩu* trên `/account` hoặc trang admin (mật khẩu hiện tại + mật khẩu mới tối thiểu 10 ký tự + nhập lại).
+  Giới hạn thử sai như đăng nhập. Mọi phiên đăng nhập khác bị đăng xuất, phiên hiện tại được giữ. Nếu đặt `ADMIN_PASSWORD`, hãy xóa nó khỏi `.env` sau khi đổi.
+
+### Quên mật khẩu
+
+Lệnh `reset-password` đặt mật khẩu ngẫu nhiên mới cho chủ sở hữu, xóa mọi phiên đăng nhập và in `Admin login: …`.
+Server ghi lại toàn bộ trạng thái khi tắt, nên **phải dừng container trước** (lệnh từ chối chạy nếu thấy server đang chạy):
+
+```bash
+docker stop apps-script-mcp
+docker run --rm -v asmcp-data:/data ghcr.io/vannguyen799/apps-script-mcp:edge node dist/cli.js reset-password
+docker start apps-script-mcp
+```
+
+Với docker compose: `docker compose stop apps-script-mcp && docker compose run --rm apps-script-mcp node dist/cli.js reset-password && docker compose up -d`
+(đọc `.env`, nên dùng được cả với PostgreSQL). Với `docker run` và PostgreSQL, thêm `-e DATABASE_URL`.
 
 ## Lượt dùng
 
@@ -200,19 +222,33 @@ Bộ đếm gom trong bộ nhớ và ghi vào trạng thái mỗi 60 giây và k
 Chỉ cổng **8787** được phép public (gồm `/mcp`, OAuth, `/account`, `/healthz`). Trang admin **8788** chỉ bind `127.0.0.1`.
 Vì `/account` và trang cấp quyền nằm trên cổng public, chỉ chủ sở hữu (đăng nhập bằng tài khoản trên server) mới kết nối được Claude.
 
-Cách dùng Cloudflare named tunnel (URL cố định):
+Container có sẵn tunnel, bật bằng biến môi trường (trong `.env` hoặc `-e`), không cần service riêng. Khi có URL, log in ra
+`Public URL: https://…/mcp`, và URL đó được dùng làm base URL (thứ tự ưu tiên: `PUBLIC_BASE_URL` > URL của tunnel > giá trị lưu ở trang admin).
+Khi bật tunnel, server chỉ tin `X-Forwarded-For` từ loopback (`TRUST_PROXY` mặc định `loopback`), nên IP giả không qua được.
+Tunnel tự khởi động lại (chờ 1 giây, tăng gấp đôi tới 60 giây) nếu bị dừng; token truyền qua biến môi trường của tiến trình con, không nằm trên dòng lệnh.
 
-1. Trong Cloudflare Zero Trust, tạo tunnel và trỏ public hostname tới `http://apps-script-mcp:8787`.
-2. Tạo file `.env`:
-   ```env
-   TUNNEL_TOKEN=...
-   PUBLIC_BASE_URL=https://mcp.example.com
-   TRUST_PROXY=1
-   ```
-3. Chạy `docker compose --profile tunnel up -d`.
+**Khuyên dùng: ngrok với domain tĩnh miễn phí** (URL không đổi, không cần domain riêng). Tài khoản ngrok free có một static domain:
 
-Quick tunnel (`trycloudflare.com`) hoặc ngrok free cũng chạy được. Nhưng URL đổi sau mỗi lần restart làm hỏng OAuth
-issuer, nên chỉ hợp để thử nhanh.
+```env
+TUNNEL=ngrok
+NGROK_AUTHTOKEN=...                        # dashboard.ngrok.com > Your Authtoken
+NGROK_DOMAIN=ten-cua-ban.ngrok-free.app    # dashboard.ngrok.com > Domains, chỉ tên miền, không có https://
+```
+
+**Cloudflare named tunnel** (cho ai có domain riêng, URL cố định): tạo tunnel trong Cloudflare Zero Trust, đặt public hostname trỏ
+tới `http://localhost:8787`, rồi:
+
+```env
+TUNNEL=cloudflare
+CLOUDFLARE_TUNNEL_TOKEN=...
+PUBLIC_BASE_URL=https://mcp.example.com    # bắt buộc, đúng hostname đã cấu hình trong dashboard
+```
+
+**Cloudflare quick tunnel** (`TUNNEL=cloudflare`, không token) chỉ để thử: URL `*.trycloudflare.com` ngẫu nhiên và **đổi sau mỗi lần khởi động lại**,
+làm hỏng connector trên claude.ai (URL là OAuth issuer) nên phải thêm lại mỗi lần.
+
+Kiểm tra cấu hình khi khởi động: `TUNNEL` phải là `off`/`cloudflare`/`ngrok`; `ngrok` cần `NGROK_AUTHTOKEN`; `NGROK_DOMAIN` chỉ là hostname.
+Dùng script cài đặt thì đặt các biến này trong shell trước khi chạy (xem [Cài đặt](#1-chạy-mcp-server)).
 
 ## Bảo mật
 
@@ -222,7 +258,7 @@ Ba lớp credential độc lập, lộ một lớp không lộ lớp khác:
 |---|---|
 | Claude → MCP | OAuth 2.1 + PKCE (DCR; trang cấp quyền yêu cầu đăng nhập tài khoản trên server và chọn kết nối của chính bạn; access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Grant, token và PAT gắn với `{tài khoản, kết nối}`: mỗi lệnh gọi chỉ đi tới kết nối đó, không bao giờ lấy từ tham số của tool. Scope `sheets.read` / `sheets.write` (và `script.eval`, chỉ khi xin rõ ràng). Chỉ lưu hash. Không đặt token trong URL. |
 | Tài khoản (`/account`, cổng public) | Mật khẩu scrypt, cookie session `HttpOnly; SameSite=Lax` (+`Secure` khi base URL là https) chỉ lưu hash, CSRF token theo phiên, kiểm tra Origin, rate-limit 5 lần sai / 15 phút theo IP **và** theo tên đăng nhập, scrypt giả cho tên không tồn tại. |
-| Trang admin | Chủ sở hữu, chỉ loopback, setup token một lần, mật khẩu scrypt, cookie session HttpOnly/SameSite=Strict, CSRF token, kiểm tra Host/Origin, rate-limit. |
+| Trang admin | Chủ sở hữu, chỉ loopback, mật khẩu scrypt (mật khẩu ngẫu nhiên in một lần ở lần chạy đầu), cookie session HttpOnly/SameSite=Strict, CSRF token, kiểm tra Host/Origin, rate-limit. |
 | MCP → Apps Script | HMAC-SHA256 trên mọi request (timestamp ±5 phút, nonce chống replay), response cũng được ký. Secret được tạo lúc pairing và không bao giờ hiển thị. |
 | Apps Script → Sheets | Quyền Google của chính bạn. Allowlist kiểm tra *trước khi* mở file, và quyền ghi tách riêng cho từng file. |
 

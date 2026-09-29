@@ -13,8 +13,6 @@ export class HttpError extends Error {
 }
 
 const ACCOUNT_STATUS: Record<string, number> = {
-  BAD_SETUP_TOKEN: 401,
-  ALREADY_SETUP: 409,
   WEAK_PASSWORD: 400,
   BAD_USERNAME: 400,
   BAD_CREDENTIALS: 401,

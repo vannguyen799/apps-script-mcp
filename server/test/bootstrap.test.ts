@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AccountService } from "../src/auth/accounts.js";
 import { verifyPasswordHash } from "../src/auth/password.js";
+import { resetOwnerPassword } from "../src/auth/accounts.js";
 import { loadConfig } from "../src/config.js";
 import { StateStore } from "../src/store/state-store.js";
 import { FailureLimiter } from "../src/util/rate-limit.js";
@@ -28,26 +29,47 @@ async function fresh() {
 }
 
 describe("owner bootstrap from ADMIN_USERNAME / ADMIN_PASSWORD (DESIGN.md 10.3)", () => {
-  it("creates the owner when there is none: hashed password, no setup token needed", async () => {
+  it("creates the owner when there is none: hashed password, nothing printed for an env password", async () => {
     const { store, accounts } = await fresh();
     expect(accounts.needsSetup()).toBe(true);
-    const u = await accounts.bootstrapOwner("Boss.One", "a-long-enough-password");
+    const printed: string[] = [];
+    const u = await accounts.bootstrapOwner("Boss.One", "a-long-enough-password", (l) => printed.push(l));
     expect(u).toMatchObject({ username: "boss.one", role: "owner" });
     expect(accounts.needsSetup()).toBe(false);
     expect(u!.passwordHash).toMatch(/^scrypt\$32768\$8\$1\$/);
     expect(JSON.stringify(store.state)).not.toContain("a-long-enough-password");
     expect(await verifyPasswordHash("a-long-enough-password", u!.passwordHash)).toBe(true);
-    expect(store.state.admin.setupTokenHash).toBeNull();
-    expect(await accounts.ensureSetupToken()).toBeNull(); // so main prints no "Setup token:"
+    expect(printed).toEqual([]);
     await expect(accounts.login("boss.one", "a-long-enough-password", "1.1.1.1")).resolves.toMatchObject({ role: "owner" });
   });
 
-  it("clears a setup token that an earlier start had minted", async () => {
-    const { store, accounts } = await fresh();
-    await accounts.ensureSetupToken();
-    expect(store.state.admin.setupTokenHash).not.toBeNull();
-    await accounts.bootstrapOwner("admin", "a-long-enough-password");
-    expect(store.state.admin.setupTokenHash).toBeNull();
+  it("without ADMIN_PASSWORD it generates 20 [A-Za-z0-9] characters, prints them once, and stores only the hash", async () => {
+    const { store, dir, accounts } = await fresh();
+    const printed: string[] = [];
+    const u = await accounts.bootstrapOwner("admin", undefined, (l) => printed.push(l));
+    expect(printed).toHaveLength(1);
+    const m = /^Admin login: admin \/ ([A-Za-z0-9]{20})  \(đổi mật khẩu trong \/account\)$/.exec(printed[0]!);
+    expect(m).not.toBeNull();
+    const pw = m![1]!;
+    expect(await verifyPasswordHash(pw, u!.passwordHash)).toBe(true);
+    expect(JSON.stringify(store.state)).not.toContain(pw);
+    expect(await readFile(path.join(dir, "state.json"), "utf8")).not.toContain(pw);
+    // a second start: an owner exists, nothing is printed, nothing changes
+    const again = new StateStore(dir);
+    await again.load();
+    const accounts2 = new AccountService({ store: again, ipLimiter: new FailureLimiter(5, 60_000), userLimiter: new FailureLimiter(5, 60_000) });
+    expect(await accounts2.bootstrapOwner("admin", undefined, (l) => printed.push(l))).toBeNull();
+    expect(printed).toHaveLength(1);
+    expect(await verifyPasswordHash(pw, again.state.users[u!.id]!.passwordHash)).toBe(true);
+  });
+
+  it("generated passwords differ between runs", async () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const { accounts } = await fresh();
+      await accounts.bootstrapOwner("admin", undefined, (l) => seen.add(l));
+    }
+    expect(seen.size).toBe(3);
   });
 
   it("creates the owner only once and never overwrites an existing password, whoever is named", async () => {
@@ -60,11 +82,9 @@ describe("owner bootstrap from ADMIN_USERNAME / ADMIN_PASSWORD (DESIGN.md 10.3)"
     expect(await verifyPasswordHash("second-password-456", store.state.users[first!.id]!.passwordHash)).toBe(false);
   });
 
-  it("does not touch an owner created through the setup token, or one that survives a restart", async () => {
+  it("does not touch an owner that survives a restart", async () => {
     const { dir, accounts } = await fresh();
-    const token = (await accounts.ensureSetupToken())!;
-    const owner = await accounts.completeSetup(token, "admin", "chosen-in-the-ui-1");
-    expect(await accounts.bootstrapOwner("admin", "env-password-12345")).toBeNull();
+    const owner = (await accounts.bootstrapOwner("admin", "chosen-in-the-ui-1"))!;
     const again = new StateStore(dir);
     await again.load();
     const accounts2 = new AccountService({ store: again, ipLimiter: new FailureLimiter(5, 60_000), userLimiter: new FailureLimiter(5, 60_000) });
@@ -75,7 +95,6 @@ describe("owner bootstrap from ADMIN_USERNAME / ADMIN_PASSWORD (DESIGN.md 10.3)"
   it("rejects a short password (startup error) and creates nothing", async () => {
     const { store, accounts } = await fresh();
     await expect(accounts.bootstrapOwner("admin", "123456789")).rejects.toThrow(/at least 10/);
-    await expect(accounts.bootstrapOwner("admin", "")).rejects.toThrow(/at least 10/);
     expect(Object.keys(store.state.users)).toHaveLength(0);
     expect(accounts.needsSetup()).toBe(true);
     expect(await accounts.bootstrapOwner("admin", "1234567890")).toMatchObject({ username: "admin" }); // exactly 10 is fine
@@ -99,8 +118,29 @@ describe("owner bootstrap from ADMIN_USERNAME / ADMIN_PASSWORD (DESIGN.md 10.3)"
     expect(acc.status).toBe(200);
     const adm = await fetch(`${h.adminUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "boss", password: "a-long-enough-password" }) });
     expect(adm.status).toBe(200);
-    const session = (await (await fetch(`${h.adminUrl}/api/session`, { headers: { cookie: (adm.headers.get("set-cookie") ?? "").split(";")[0]! } })).json()) as { setupRequired: boolean; authenticated: boolean };
-    expect(session).toMatchObject({ setupRequired: false, authenticated: true });
+    const session = (await (await fetch(`${h.adminUrl}/api/session`, { headers: { cookie: (adm.headers.get("set-cookie") ?? "").split(";")[0]! } })).json()) as { authenticated: boolean };
+    expect(session).toMatchObject({ authenticated: true });
+  });
+});
+
+describe("reset-password CLI logic", () => {
+  it("gives the owner a new random password and removes every session; needs an owner", async () => {
+    const { dir, store, accounts } = await fresh();
+    expect(await resetOwnerPassword(store)).toBeNull();
+    const owner = (await accounts.bootstrapOwner("boss", "old-password-12345"))!;
+    await accounts.createSession(owner.id);
+    await accounts.createSession(owner.id);
+    expect(Object.keys(store.state.sessions)).toHaveLength(2);
+    const r = (await resetOwnerPassword(store))!;
+    expect(r.username).toBe("boss");
+    expect(r.password).toMatch(/^[A-Za-z0-9]{20}$/);
+    // what the next start of the server sees, straight from the local file
+    const reopened = new StateStore(dir);
+    await reopened.load();
+    expect(reopened.state.sessions).toEqual({});
+    const hash = reopened.state.users[owner.id]!.passwordHash;
+    expect(await verifyPasswordHash(r.password, hash)).toBe(true);
+    expect(await verifyPasswordHash("old-password-12345", hash)).toBe(false);
   });
 });
 

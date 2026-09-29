@@ -143,12 +143,12 @@ describe("state migration v1 -> v2 (DESIGN.md 9.5)", () => {
     expect(store.state.pats).toEqual({});
   });
 
-  it("v1 that never finished setup: no users, and the setup token hash survives", async () => {
+  it("v1 that never finished setup: no users, and the stale setup token hash is dropped", async () => {
     const { store } = await loadFrom(
       await v1Fixture({ admin: { passwordHash: null, setupTokenHash: "a".repeat(64) }, link: null, pending: null, oauth: {}, pats: {} }),
     );
     expect(store.state.users).toEqual({});
-    expect(store.state.admin.setupTokenHash).toBe("a".repeat(64));
+    expect(store.state).not.toHaveProperty("admin");
     const accounts = new AccountService({ store, ipLimiter: new FailureLimiter(), userLimiter: new FailureLimiter() });
     expect(accounts.needsSetup()).toBe(true);
   });

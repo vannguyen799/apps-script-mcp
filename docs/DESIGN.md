@@ -25,8 +25,8 @@ The business layer depends on a `SheetsGateway` port. `AppsScriptGateway` is one
 ## 3. Authentication layers (independent credentials)
 
 ### 3.1 Admin UI (port 8788)
-- First start with no admin password: server generates a one-time **setup token** (random 24 bytes, b64url),
-  prints it to stdout once (`Setup token: ...`), keeps only its hash. The UI asks for it + a new password (min 10 chars).
+- First start with no owner: the server creates one (§10.3): a default `admin` account with a random password printed
+  once to stdout. There is no setup token and no first-run form. Change the password in the UI (§9.1).
 - Password stored as scrypt (N=2^15, r=8, p=1, 16-byte salt, 64-byte key).
 - Session: random 32-byte id, cookie `asmcp_admin` `HttpOnly; SameSite=Strict; Path=/` (+`Secure` when request is https),
   12 h idle expiry, in-memory store.
@@ -204,7 +204,7 @@ No tool evaluates code, except the opt-in `run_apps_script` of §8; the action w
 ## 7. Server state & logging
 
 State file `DATA_DIR/state.json` (default `/data`), written atomically (tmp + rename), mode 0600. Holds:
-instanceId, admin password hash, setup-token hash, publicBaseUrl, Apps Script link `{url, secret, account, pairedAt}`,
+instanceId, publicBaseUrl, Apps Script link `{url, secret, account, pairedAt}`,
 pending pairing, OAuth clients, refresh-token/access-token hashes, PAT hashes.
 
 Connection states: `not_connected`, `pairing_pending`, `connected`, `error` (last health ping failed; message kept).
@@ -275,8 +275,16 @@ This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 whe
   invites. `users` keeps the shape `{id, username, passwordHash (scrypt as §3.1), role: "owner", createdAt}` and `userId`
   stays on connections, grants, tokens and PATs, so every ownership check keeps working. Usernames are
   `^[a-z0-9._-]{3,32}$`, stored lowercase.
-- The owner is created by first-run setup (admin UI, setup token as before: username, default `admin`, + password) or from
-  the environment (§10.3).
+- The owner is created at startup when none exists (§10.3): username `ADMIN_USERNAME` (default `admin`), password from
+  `ADMIN_PASSWORD` or generated. There is no setup token or first-run form.
+- **Password change** (`POST /account/api/password` on 8787, `POST /api/password` on 8788; needs a session and the CSRF
+  token): `{currentPassword, newPassword (min 10), confirmPassword}`. Rate-limited exactly like login (the same per-IP and
+  per-username counters). A wrong current password answers 403 `FORBIDDEN`, not 401, so the UIs do not read it as "logged
+  out". On success every other session of the user ends (public sessions and admin UI sessions) and the current one stays.
+- **Lost password:** `node dist/cli.js reset-password` loads the same config and store (file or PostgreSQL), sets a new
+  random password for the owner, removes all sessions and prints `Admin login: …`. The server rewrites the whole stored
+  document (also on shutdown), so it would overwrite the change: the command refuses to run when `127.0.0.1:PORT_PUBLIC/healthz`
+  answers. Stop the container, run it in a one-off container on the same volume/database, start the container again.
 - **Public session** (port 8787, needed for consent and `/account`):
   - cookie `asmcp_sess`: random 32 bytes; only the hash is persisted with `userId`, `createdAt`, `expiresAt` (30 days).
   - Flags: `HttpOnly; SameSite=Lax; Path=/`, plus `Secure` when the public base is https. Lax is required because the
@@ -440,6 +448,40 @@ Where the server refines §9 (behaviour is otherwise as written above):
   (`GET /api/usage`). Both return `{usage: [{day, tool, calls, errors}]}`, newest day first.
 
 ### 10.3 Owner bootstrap from env
-`ADMIN_USERNAME` (default `admin`) and `ADMIN_PASSWORD` (min 10 chars) create the owner only when no owner exists. Later
-starts ignore them: they never overwrite a password. A too-short password → startup error. When they are used, no setup
-token is printed. The docs recommend changing the password in the UI and removing the env var afterwards.
+With no owner at startup, `ADMIN_USERNAME` (default `admin`) and `ADMIN_PASSWORD` (min 10 chars) create one. Without
+`ADMIN_PASSWORD` a random 20-character password from `[A-Za-z0-9]` (`crypto.randomInt`) is generated and printed once, directly to
+stdout and not through the logger:
+`Admin login: <username> / <password>  (đổi mật khẩu trong /account)`. Only the scrypt hash is stored. An env password is
+never printed. Later starts (an owner exists) ignore the variables and print nothing: they never overwrite a password. A
+too-short password → startup error. The docs recommend changing the password in the UI and removing the env var afterwards.
+The state no longer has a setup-token hash; loading drops a stored one.
+
+## 11. Built-in tunnel (env-enabled)
+
+The container can expose port 8787 publicly by itself, so no separate tunnel service is needed. `src/tunnel/` is
+networking only. It starts a child process and reports the public URL through a callback. Business code never
+imports it; only `main.ts` wires it.
+
+| Env | Behaviour |
+|---|---|
+| unset / `TUNNEL=off` | No tunnel (default). |
+| `TUNNEL=cloudflare` | Quick tunnel: `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8787`. The `https://*.trycloudflare.com` URL is read from cloudflared's output. It is random and **changes on every restart**, so it suits trying things out. |
+| `TUNNEL=cloudflare` + `CLOUDFLARE_TUNNEL_TOKEN` | Named tunnel: `cloudflared tunnel --no-autoupdate run --token …`. The hostname is configured in the Cloudflare dashboard, so `PUBLIC_BASE_URL` must be set to it (startup error otherwise). |
+| `TUNNEL=ngrok` + `NGROK_AUTHTOKEN` (+ `NGROK_DOMAIN`) | `ngrok http 127.0.0.1:8787 --log stdout --log-format json` (+ `--url https://<NGROK_DOMAIN>`). The URL is read from the JSON log line `url`. A free ngrok account includes one **static domain**: a stable URL at no cost, which is the recommended option. |
+
+- **Public base URL precedence:** `PUBLIC_BASE_URL` env > URL reported by the tunnel > the value saved in the admin UI.
+  The tunnel URL is a runtime value: it is not persisted, and the OAuth router is rebuilt when it changes. The admin UI
+  and `/account` show it as the MCP endpoint, and the container log prints `Public URL: https://…/mcp` once it is known.
+- **Proxy trust:** with a built-in tunnel, the proxy is local, so express trusts `X-Forwarded-For` only from loopback
+  (`trust proxy = "loopback"`) unless `TRUST_PROXY` is set explicitly. Direct connections to 8787 cannot spoof their IP.
+- **Supervision:** if the child exits, restart it with backoff (1 s, doubling to 60 s max). Its output goes to the log with
+  the prefix `[tunnel]`, token values redacted. On shutdown the child is killed.
+- **Secrets:** tokens are passed to the child via its environment (`TUNNEL_TOKEN`, `NGROK_AUTHTOKEN`), never as argv, so
+  they do not show in `ps`.
+- **Image:** the Dockerfile copies the `cloudflared` and `ngrok` binaries from the vendors' official multi-arch images,
+  pinned by version tag (`cloudflare/cloudflared:<v>`, `ngrok/ngrok:<v>-alpine`), into `/usr/local/bin`. It runs a
+  version check at build time.
+- **Compose:** the separate `cloudflared` service is removed; `.env` carries the variables above.
+- **Installers:** they pass `TUNNEL`, `CLOUDFLARE_TUNNEL_TOKEN`, `NGROK_AUTHTOKEN`, `NGROK_DOMAIN` and
+  `PUBLIC_BASE_URL` through when they are set in the user's shell. They then print the public URL, polling the container
+  log for `Public URL:` for up to 30 s.
