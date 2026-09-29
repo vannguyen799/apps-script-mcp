@@ -32,9 +32,16 @@ function doGet(e) {
       '<p style="font-family:sans-serif;margin:2rem">Truy cập bị từ chối. ' +
       'Hãy mở trang này khi đã đăng nhập bằng tài khoản Google sở hữu script.</p>');
   }
-  return HtmlService.createHtmlOutputFromFile('Admin')
+  return adminPage_()
     .setTitle('gsheets-mcp - Quản trị')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/** The single-file bundle (Code.gs) inlines Admin.html as ADMIN_HTML_; the multi-file layout reads the file. */
+function adminPage_() {
+  return typeof ADMIN_HTML_ === 'string'
+    ? HtmlService.createHtmlOutput(ADMIN_HTML_)
+    : HtmlService.createHtmlOutputFromFile('Admin');
 }
 
 /** Owner gate (section 5.1): active user must be signed in and equal the effective (deploying) user. */

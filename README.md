@@ -61,10 +61,15 @@ docker compose logs gsheets-mcp | grep "Setup token"
 ```
 </details>
 
-### 2. Triển khai Apps Script
+### 2. Triển khai Apps Script (dán 1 file)
 
-Làm theo [apps-script/README.md](apps-script/README.md): tạo project, dán code, rồi Deploy → Web app với
-*Execute as: Me* và *Who has access: Anyone*. Khi Google hỏi quyền, bạn cấp bằng tài khoản của mình.
+1. Vào <https://script.google.com> → **New project**.
+2. Copy toàn bộ [`apps-script/Code.gs`](https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/apps-script/Code.gs)
+   rồi dán đè vào `Code.gs` trong trình soạn thảo, bấm Lưu.
+3. **Deploy → New deployment → Web app**, chọn *Execute as: Me* và *Who has access: Anyone*, rồi cấp quyền bằng tài
+   khoản Google của bạn.
+
+Chi tiết và cách cập nhật: [apps-script/README.md](apps-script/README.md).
 
 ### 3. Pair hai bên
 
@@ -139,7 +144,7 @@ Log không ghi secret, token, mật khẩu, mã pairing, nội dung ô hay query
 ## Phát triển
 
 ```bash
-cd apps-script && npm test                          # test Apps Script trên Node (mock Google services)
+cd apps-script && npm test && npm run test:bundle   # test Apps Script trên Node (src/ và bản gộp Code.gs)
 cd server && npm ci && npm run build && npm test    # server, gồm test chéo với code Apps Script thật
 docker compose up -d --build                        # build image từ source
 ```

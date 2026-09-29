@@ -4,6 +4,8 @@
   "private": true,
   "description": "Google Apps Script half of gsheets-mcp, with a dependency-free Node test harness.",
   "scripts": {
-    "test": "node --test \"test/*.test.js\""
+    "bundle": "node scripts/bundle.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:bundle": "node scripts/bundle.js && GSMCP_BUNDLE=1 node --test \"test/*.test.js\""
   }
 }

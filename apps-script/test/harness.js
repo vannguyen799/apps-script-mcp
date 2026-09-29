@@ -32,6 +32,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const SRC_DIR = path.join(__dirname, '..', 'src');
+// GSMCP_BUNDLE=1 runs the whole suite against the single-file build (apps-script/Code.gs) instead of src/.
+const BUNDLE = process.env.GSMCP_BUNDLE === '1';
+const BUNDLE_FILE = path.join(__dirname, '..', 'Code.gs');
 
 // ---------------------------------------------------------------- client-side crypto (spec section 4)
 
@@ -359,7 +362,10 @@ function createSandbox(opts = {}) {
   const HtmlService = {
     XFrameOptionsMode: { ALLOWALL: 'ALLOWALL' },
     createHtmlOutput: (html) => htmlOutput(html),
-    createHtmlOutputFromFile: (name) => htmlOutput(fs.readFileSync(path.join(SRC_DIR, `${name}.html`), 'utf8'))
+    createHtmlOutputFromFile: (name) => {
+      if (BUNDLE) throw new Error('The single-file bundle must not read HTML files');
+      return htmlOutput(fs.readFileSync(path.join(SRC_DIR, `${name}.html`), 'utf8'));
+    }
   };
 
   const SpreadsheetApp = {
@@ -386,8 +392,12 @@ function createSandbox(opts = {}) {
     ScriptApp: { getService: () => ({ getUrl: () => opts.webAppUrl || 'https://script.google.com/macros/s/AKfycbTEST/exec' }) },
     console: consoleMock, Logger: { log: record('log') }, Date: FakeDate
   });
-  for (const f of fs.readdirSync(SRC_DIR).filter((n) => n.endsWith('.js')).sort()) {
-    new vm.Script(fs.readFileSync(path.join(SRC_DIR, f), 'utf8'), { filename: f }).runInContext(ctx);
+  if (BUNDLE) {
+    new vm.Script(fs.readFileSync(BUNDLE_FILE, 'utf8'), { filename: 'Code.gs' }).runInContext(ctx);
+  } else {
+    for (const f of fs.readdirSync(SRC_DIR).filter((n) => n.endsWith('.js')).sort()) {
+      new vm.Script(fs.readFileSync(path.join(SRC_DIR, f), 'utf8'), { filename: f }).runInContext(ctx);
+    }
   }
 
   const sb = {

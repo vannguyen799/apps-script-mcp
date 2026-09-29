@@ -19,6 +19,11 @@ jobs:
       - name: Apps Script tests
         working-directory: apps-script
         run: npm test
+      - name: Apps Script single-file bundle is up to date and passes the suite
+        working-directory: apps-script
+        run: |
+          npm run test:bundle
+          git diff --exit-code -- Code.gs || { echo "::error::apps-script/Code.gs is stale - run 'npm run bundle' and commit it"; exit 1; }
       - name: Server build + tests
         working-directory: server
         run: |

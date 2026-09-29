@@ -13,8 +13,28 @@
 | `src/Store.js` | Lưu allowlist và thông tin ghép nối trong ScriptProperties |
 | `src/Admin.html` | Trang quản trị dành cho chủ sở hữu |
 | `src/appsscript.json` | Manifest (V8, scope tối thiểu) |
+| `Code.gs` | Bản gộp 1 file để dán (sinh bằng `npm run bundle`, không sửa tay) |
 
 ## Triển khai từng bước
+
+### Cách nhanh nhất: dán 1 file
+
+1. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính.
+2. Mở <https://script.google.com> → **Dự án mới** (New project).
+3. Mở <https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/apps-script/Code.gs>, chọn toàn bộ (Ctrl+A), copy,
+   rồi dán **đè** lên toàn bộ nội dung `Code.gs` trong trình soạn thảo. Bấm Lưu.
+4. **Triển khai** → **Tùy chọn triển khai mới** → loại **Ứng dụng web**:
+   *Thực thi dưới dạng*: **Tôi**; *Người có quyền truy cập*: **Bất kỳ ai**. Bấm Triển khai và cấp quyền khi được hỏi.
+5. Copy URL web app (kết thúc bằng `/exec`), mở nó trên trình duyệt để vào trang quản trị, rồi làm tiếp từ mục
+   [Ghép nối](#4-ghép-nối-với-máy-chủ-mcp) bên dưới.
+
+Không bắt buộc sửa `appsscript.json`: Google tự nhận diện quyền cần thiết (`spreadsheets`, `userinfo.email`).
+Nếu muốn khóa đúng scope tối thiểu, bật hiển thị manifest trong **Cài đặt dự án** và dán `src/appsscript.json`.
+
+Khi có bản mới: dán lại `Code.gs`, rồi **Triển khai** → **Quản lý bản triển khai** → sửa bản hiện có → **Phiên bản mới**.
+URL giữ nguyên, nên không phải pair lại.
+
+Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `clasp`), dành cho người phát triển.
 
 ### 1. Tạo dự án Apps Script
 
