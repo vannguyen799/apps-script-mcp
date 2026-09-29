@@ -1,0 +1,9 @@
+{
+  "name": "gsheets-mcp-apps-script",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Google Apps Script half of gsheets-mcp, with a dependency-free Node test harness.",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

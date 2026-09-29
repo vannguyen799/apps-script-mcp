@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>gsheets-mcp - Quản trị</title>
+<style nonce="{{NONCE}}">
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--muted:#5f6368;--line:#dadce0;--pri:#1a73e8;--ok:#188038;--warn:#b06000;--err:#b3261e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{background:#fff;border-bottom:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+header h1{font-size:18px;margin:0}
+main{max-width:860px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:16px;margin:0 0 10px}
+.hidden{display:none!important}
+label{display:block;font-weight:600;margin:10px 0 4px}
+input[type=text],input[type=password],input[type=url]{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;font:inherit}
+button{padding:8px 14px;border:1px solid #9aa0a6;border-radius:6px;background:#fff;font:inherit;cursor:pointer}
+button.primary{background:var(--pri);border-color:var(--pri);color:#fff}
+button.danger{color:var(--err);border-color:var(--err)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.muted{color:var(--muted);font-size:13px}
+.badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;color:#fff}
+.b-not_connected{background:#80868b}.b-pairing_pending{background:var(--warn)}.b-connected{background:var(--ok)}.b-error{background:var(--err)}
+.code{font:700 40px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;background:#eef3fd;border-radius:8px;padding:10px 18px;display:inline-block}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+.msg{margin-top:10px;padding:8px 10px;border-radius:6px;font-size:14px}
+.msg.err{background:#fce8e6;color:var(--err)}.msg.ok{background:#e6f4ea;color:var(--ok)}
+.once{background:#fef7e0;border:1px solid #f9ab00;border-radius:8px;padding:10px;margin-top:10px}
+.scopes label{display:inline-block;font-weight:400;margin-right:14px}
+.narrow{max-width:420px;margin:60px auto}
+</style>
+</head>
+<body>
+<header>
+  <h1>gsheets-mcp</h1>
+  <div id="hdr-actions" class="hidden"><button id="btn-logout" type="button">Đăng xuất</button></div>
+</header>
+<main>
+  <div id="notice" class="msg err hidden" role="alert"></div>
+
+  <!-- First-run setup -->
+  <section id="view-setup" class="card narrow hidden">
+    <h2>Thiết lập lần đầu</h2>
+    <p class="muted">Nhập setup token (in ra một lần trong log/stdout của container: dòng <code>Setup token: ...</code>) và đặt mật khẩu quản trị (tối thiểu 10 ký tự).</p>
+    <form id="form-setup">
+      <label for="setup-token">Setup token</label>
+      <input id="setup-token" type="password" autocomplete="off" required>
+      <label for="setup-pw">Mật khẩu mới</label>
+      <input id="setup-pw" type="password" autocomplete="new-password" minlength="10" required>
+      <label for="setup-pw2">Nhập lại mật khẩu</label>
+      <input id="setup-pw2" type="password" autocomplete="new-password" minlength="10" required>
+      <div class="row"><button class="primary" type="submit">Hoàn tất thiết lập</button></div>
+    </form>
+  </section>
+
+  <!-- Login -->
+  <section id="view-login" class="card narrow hidden">
+    <h2>Đăng nhập quản trị</h2>
+    <form id="form-login">
+      <label for="login-pw">Mật khẩu</label>
+      <input id="login-pw" type="password" autocomplete="current-password" required>
+      <div class="row"><button class="primary" type="submit">Đăng nhập</button></div>
+    </form>
+  </section>
+
+  <!-- Dashboard -->
+  <div id="view-dash" class="hidden">
+    <section class="card">
+      <h2>Trạng thái kết nối Apps Script</h2>
+      <div><span id="badge" class="badge b-not_connected">not_connected</span> <span id="badge-text" class="muted"></span></div>
+      <div id="conn-msg" class="msg err hidden"></div>
+      <div id="conn-info" class="hidden">
+        <p>Tài khoản Google: <strong id="conn-account"></strong></p>
+        <p class="muted">Đã ghép cặp lúc: <span id="conn-paired"></span> · Kiểm tra gần nhất: <span id="conn-checked">-</span></p>
+        <p class="muted mono" id="conn-url"></p>
+        <div class="row">
+          <button id="btn-test" type="button">Test connection</button>
+          <button id="btn-unpair" type="button" class="danger">Unpair</button>
+        </div>
+        <p class="muted">Unpair ở đây chỉ xoá liên kết trên server này. Hãy Unpair cả trong trang quản trị Apps Script.</p>
+      </div>
+
+      <div id="pair-box">
+        <h3 style="font-size:15px;margin:16px 0 4px">Ghép cặp với Apps Script</h3>
+        <label for="as-url">URL web app của Apps Script</label>
+        <input id="as-url" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+        <div class="row"><button id="btn-pair" class="primary" type="button">Tạo mã pairing</button></div>
+      </div>
+
+      <div id="pair-active" class="hidden">
+        <p>Mở trang quản trị Apps Script (chủ sở hữu) và nhập mã này:</p>
+        <div class="code" id="pair-code">----</div>
+        <p>Còn lại: <strong id="pair-countdown">10:00</strong> <span class="muted">· đang tự động kiểm tra mỗi vài giây...</span></p>
+        <div class="row"><button id="btn-pair-cancel" type="button">Huỷ</button></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Bảng tính được cấp quyền</h2>
+      <p class="muted">Danh sách chỉ đọc, lấy qua Apps Script. Để thêm/sửa/xoá bảng tính hãy dùng trang quản trị Apps Script.</p>
+      <div id="sheets-msg" class="muted"></div>
+      <table id="sheets-table" class="hidden"><thead><tr><th>Tên</th><th>Alias</th><th>Quyền</th><th>ID</th></tr></thead><tbody></tbody></table>
+      <div class="row"><button id="btn-sheets" type="button">Tải lại danh sách</button></div>
+    </section>
+
+    <section class="card">
+      <h2>Public base URL &amp; MCP endpoint</h2>
+      <label for="base-url">Public base URL (HTTPS, không có đường dẫn)</label>
+      <input id="base-url" type="url" placeholder="https://mcp.example.com" autocomplete="off">
+      <p id="base-locked" class="muted hidden">Đã đặt bằng biến môi trường PUBLIC_BASE_URL nên không thể sửa ở đây.</p>
+      <div class="row"><button id="btn-base" type="button">Lưu</button></div>
+      <div id="base-msg" class="msg hidden"></div>
+      <p>MCP endpoint:</p>
+      <div class="row"><span class="mono" id="mcp-endpoint">(chưa cấu hình)</span> <button id="btn-copy-endpoint" type="button">Copy</button></div>
+      <p class="muted">Đổi base URL sẽ đổi issuer OAuth; các kết nối OAuth cũ nên được kết nối lại. Dùng URL cố định (tunnel có tên), không dùng quick-tunnel.</p>
+    </section>
+
+    <section class="card">
+      <h2>Personal Access Tokens (PAT)</h2>
+      <form id="form-pat">
+        <label for="pat-label">Nhãn</label>
+        <input id="pat-label" type="text" maxlength="64" placeholder="Claude Code trên laptop" required>
+        <div class="scopes" style="margin-top:8px">
+          <label><input type="checkbox" id="pat-read" checked> sheets.read</label>
+          <label><input type="checkbox" id="pat-write"> sheets.write</label>
+        </div>
+        <div class="row"><button class="primary" type="submit">Tạo token</button></div>
+      </form>
+      <div id="pat-once" class="once hidden">
+        <strong>Sao chép token ngay - sẽ không hiển thị lại.</strong>
+        <div class="mono" id="pat-token"></div>
+        <div class="row"><button id="btn-copy-pat" type="button">Copy</button></div>
+      </div>
+      <table><thead><tr><th>Nhãn</th><th>Quyền</th><th>Tạo lúc</th><th>Dùng gần nhất</th><th></th></tr></thead><tbody id="pat-list"></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Kết nối OAuth (claude.ai...)</h2>
+      <table><thead><tr><th>Ứng dụng</th><th>Quyền</th><th>Tạo lúc</th><th></th></tr></thead><tbody id="grant-list"></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Kết nối Claude</h2>
+      <p><strong>claude.ai (custom connector):</strong> Settings &rarr; Connectors &rarr; Add custom connector, dán URL:</p>
+      <div class="mono" id="help-url">(cấu hình Public base URL trước)</div>
+      <p>Sau đó nhập mật khẩu quản trị ở trang cấp quyền hiện ra.</p>
+      <p><strong>Claude Code:</strong> tạo một PAT ở trên rồi chạy:</p>
+      <pre id="help-cmd">claude mcp add --transport http gsheets &lt;URL&gt; --header "Authorization: Bearer &lt;PAT&gt;"</pre>
+    </section>
+  </div>
+</main>
+
+<script nonce="{{NONCE}}">
+"use strict";
+var $ = function (id) { return document.getElementById(id); };
+var csrf = null;
+var pollTimer = null;
+var lastStatus = null;
+var countdownTimer = null;
+
+function show(id, on) { $(id).classList.toggle("hidden", !on); }
+function fmt(ts) { return ts ? new Date(ts).toLocaleString("vi-VN") : "-"; }
+function notice(msg) { var n = $("notice"); n.textContent = msg || ""; show("notice", !!msg); }
+function flash(id, msg, ok) { var e = $(id); e.textContent = msg || ""; e.className = "msg " + (ok ? "ok" : "err") + (msg ? "" : " hidden"); }
+
+function api(method, path, body) {
+  var headers = { "Content-Type": "application/json" };
+  if (csrf && method !== "GET") headers["X-CSRF-Token"] = csrf;
+  return fetch("/api" + path, { method: method, headers: headers, credentials: "same-origin", body: method === "GET" ? undefined : JSON.stringify(body || {}) })
+    .then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) { var e = new Error((j.error && j.error.message) || ("HTTP " + r.status)); e.status = r.status; e.code = j.error && j.error.code; throw e; }
+        return j;
+      });
+    });
+}
+
+function copyText(text, btn) {
+  var done = function () { var t = btn.textContent; btn.textContent = "Đã copy"; setTimeout(function () { btn.textContent = t; }, 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, function () {});
+}
+
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function td(text) { var c = document.createElement("td"); c.textContent = text; return c; }
+
+/* ---------- views ---------- */
+function route() {
+  stopPolling();
+  return api("GET", "/session").then(function (s) {
+    csrf = s.csrfToken;
+    show("view-setup", s.setupRequired);
+    show("view-login", !s.setupRequired && !s.authenticated);
+    show("view-dash", s.authenticated);
+    show("hdr-actions", s.authenticated);
+    if (s.authenticated) return loadDash();
+  }).catch(function (e) { notice(e.message); });
+}
+
+function loadDash() {
+  return Promise.all([refreshStatus(), refreshPats(), refreshGrants()]).then(function () { loadSheets(); startPolling(); });
+}
+
+/* ---------- status ---------- */
+var BADGE = { not_connected: "Chưa kết nối", pairing_pending: "Đang chờ ghép cặp", connected: "Đã kết nối", error: "Lỗi" };
+
+function renderStatus(st) {
+  lastStatus = st;
+  var c = st.connection;
+  var b = $("badge");
+  b.className = "badge b-" + c.state; b.textContent = c.state;
+  $("badge-text").textContent = BADGE[c.state] || "";
+  flash("conn-msg", c.message, false);
+  var linked = !!c.account;
+  show("conn-info", linked);
+  $("conn-account").textContent = c.account || "";
+  $("conn-paired").textContent = fmt(c.pairedAt);
+  $("conn-checked").textContent = fmt(c.lastCheckedAt);
+  $("conn-url").textContent = c.appsScriptUrl || "";
+  show("pair-box", c.state !== "pairing_pending");
+  show("pair-active", c.state === "pairing_pending");
+  if (c.pairing) { $("pair-code").textContent = c.pairing.code; tickCountdown(); }
+  if (!$("as-url").value && c.appsScriptUrl) $("as-url").value = c.appsScriptUrl;
+
+  var pb = st.publicBaseUrl;
+  if (document.activeElement !== $("base-url")) $("base-url").value = pb.value || "";
+  $("base-url").disabled = !pb.editable; $("btn-base").disabled = !pb.editable;
+  show("base-locked", !pb.editable);
+  $("mcp-endpoint").textContent = st.mcpEndpoint || "(chưa cấu hình)";
+  $("help-url").textContent = st.mcpEndpoint || "(cấu hình Public base URL trước)";
+  var url = st.mcpEndpoint || "<URL>";
+  $("help-cmd").textContent = 'claude mcp add --transport http gsheets ' + url + ' --header "Authorization: Bearer <PAT>"';
+}
+
+function refreshStatus() { return api("GET", "/status").then(renderStatus); }
+
+function tickCountdown() {
+  clearInterval(countdownTimer);
+  var run = function () {
+    var p = lastStatus && lastStatus.connection.pairing;
+    if (!p) return;
+    var left = Math.max(0, Math.floor((p.expiresAt - Date.now()) / 1000));
+    $("pair-countdown").textContent = Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0");
+    if (left === 0) { clearInterval(countdownTimer); refreshStatus(); }
+  };
+  run(); countdownTimer = setInterval(run, 1000);
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(function () {
+    if (document.hidden) return;
+    var was = lastStatus && lastStatus.connection.state;
+    refreshStatus().then(function () {
+      var now = lastStatus.connection.state;
+      if (was === "pairing_pending" && now === "connected") loadSheets();
+    }).catch(function (e) { if (e.status === 401) route(); });
+  }, 3000);
+}
+function stopPolling() { clearInterval(pollTimer); clearInterval(countdownTimer); }
+
+/* ---------- sheets ---------- */
+function loadSheets() {
+  var tb = $("sheets-table").querySelector("tbody");
+  if (!lastStatus || !lastStatus.connection.account) { clear(tb); show("sheets-table", false); $("sheets-msg").textContent = "Chưa kết nối."; return Promise.resolve(); }
+  $("sheets-msg").textContent = "Đang tải...";
+  return api("GET", "/spreadsheets").then(function (r) {
+    clear(tb);
+    r.spreadsheets.forEach(function (s) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(s.name)); tr.appendChild(td(s.alias || "")); tr.appendChild(td(s.access)); tr.appendChild(td(s.id));
+      tb.appendChild(tr);
+    });
+    show("sheets-table", r.spreadsheets.length > 0);
+    $("sheets-msg").textContent = r.spreadsheets.length ? "" : "Chưa có bảng tính nào được cấp quyền.";
+  }).catch(function (e) { clear(tb); show("sheets-table", false); $("sheets-msg").textContent = "Không tải được: " + e.message; });
+}
+
+/* ---------- PAT / grants ---------- */
+function refreshPats() {
+  return api("GET", "/pats").then(function (r) {
+    var tb = $("pat-list"); clear(tb);
+    r.pats.forEach(function (p) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(p.label + " (" + p.hint + "…)")); tr.appendChild(td(p.scopes.join(", "))); tr.appendChild(td(fmt(p.createdAt))); tr.appendChild(td(fmt(p.lastUsedAt)));
+      var act = document.createElement("td"); var b = document.createElement("button"); b.type = "button"; b.className = "danger"; b.textContent = "Thu hồi";
+      b.addEventListener("click", function () { if (confirm("Thu hồi token này?")) api("DELETE", "/pats/" + encodeURIComponent(p.id)).then(refreshPats).catch(function (e) { notice(e.message); }); });
+      act.appendChild(b); tr.appendChild(act); tb.appendChild(tr);
+    });
+  });
+}
+
+function refreshGrants() {
+  return api("GET", "/grants").then(function (r) {
+    var tb = $("grant-list"); clear(tb);
+    if (!r.grants.length) { var tr0 = document.createElement("tr"); var c0 = td("Chưa có kết nối OAuth nào."); c0.colSpan = 4; tr0.appendChild(c0); tb.appendChild(tr0); }
+    r.grants.forEach(function (g) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(g.clientName)); tr.appendChild(td(g.scopes.join(", "))); tr.appendChild(td(fmt(g.createdAt)));
+      var act = document.createElement("td"); var b = document.createElement("button"); b.type = "button"; b.className = "danger"; b.textContent = "Thu hồi";
+      b.addEventListener("click", function () { if (confirm("Thu hồi kết nối này?")) api("DELETE", "/grants/" + encodeURIComponent(g.id)).then(refreshGrants).catch(function (e) { notice(e.message); }); });
+      act.appendChild(b); tr.appendChild(act); tb.appendChild(tr);
+    });
+  });
+}
+
+/* ---------- events ---------- */
+$("form-setup").addEventListener("submit", function (ev) {
+  ev.preventDefault(); notice("");
+  if ($("setup-pw").value !== $("setup-pw2").value) { notice("Mật khẩu nhập lại không khớp."); return; }
+  api("POST", "/setup", { setupToken: $("setup-token").value, password: $("setup-pw").value })
+    .then(function () { $("setup-token").value = ""; $("setup-pw").value = ""; $("setup-pw2").value = ""; return route(); })
+    .catch(function (e) { notice(e.message); });
+});
+
+$("form-login").addEventListener("submit", function (ev) {
+  ev.preventDefault(); notice("");
+  api("POST", "/login", { password: $("login-pw").value })
+    .then(function () { $("login-pw").value = ""; return route(); })
+    .catch(function (e) { notice(e.message); });
+});
+
+$("btn-logout").addEventListener("click", function () { api("POST", "/logout").then(function () { csrf = null; return route(); }); });
+
+$("btn-pair").addEventListener("click", function () {
+  notice("");
+  api("POST", "/pairing/start", { url: $("as-url").value.trim() })
+    .then(function () { return refreshStatus(); })
+    .catch(function (e) { notice(e.message); });
+});
+$("btn-pair-cancel").addEventListener("click", function () { api("POST", "/pairing/cancel").then(refreshStatus).catch(function (e) { notice(e.message); }); });
+$("btn-test").addEventListener("click", function () {
+  notice(""); api("POST", "/connection/test").then(refreshStatus).then(loadSheets).catch(function (e) { notice(e.message); });
+});
+$("btn-unpair").addEventListener("click", function () {
+  if (!confirm("Xoá liên kết với Apps Script trên server này?")) return;
+  api("POST", "/connection/unpair").then(refreshStatus).then(loadSheets).catch(function (e) { notice(e.message); });
+});
+$("btn-sheets").addEventListener("click", loadSheets);
+
+$("btn-base").addEventListener("click", function () {
+  api("PUT", "/settings/public-base-url", { value: $("base-url").value.trim() || null })
+    .then(function (st) { renderStatus(st); flash("base-msg", "Đã lưu.", true); })
+    .catch(function (e) { flash("base-msg", e.message, false); });
+});
+$("btn-copy-endpoint").addEventListener("click", function () { if (lastStatus && lastStatus.mcpEndpoint) copyText(lastStatus.mcpEndpoint, $("btn-copy-endpoint")); });
+
+$("form-pat").addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  var scopes = [];
+  if ($("pat-read").checked) scopes.push("sheets.read");
+  if ($("pat-write").checked) scopes.push("sheets.write");
+  api("POST", "/pats", { label: $("pat-label").value, scopes: scopes })
+    .then(function (r) { $("pat-token").textContent = r.token; show("pat-once", true); $("pat-label").value = ""; return refreshPats(); })
+    .catch(function (e) { notice(e.message); });
+});
+$("btn-copy-pat").addEventListener("click", function () { copyText($("pat-token").textContent, $("btn-copy-pat")); });
+
+route();
+</script>
+</body>
+</html>

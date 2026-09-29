@@ -1,0 +1,43 @@
+services:
+  gsheets-mcp:
+    # Prebuilt multi-arch image from GHCR (edge = main branch, x.y.z / latest = releases).
+    # Building from source instead: docker compose up -d --build
+    image: ghcr.io/vannguyen799/gsheets-mcp:${GSMCP_TAG:-edge}
+    build: ./server
+    pull_policy: missing
+    container_name: gsheets-mcp
+    restart: unless-stopped
+    ports:
+      - "8787:8787"              # public app (/mcp, OAuth, /healthz): the only port a tunnel may target
+      - "127.0.0.1:8788:8788"    # admin UI: loopback only, never publish this publicly
+    volumes:
+      - gsmcp-data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+
+  # Named Cloudflare tunnel -> http://gsheets-mcp:8787. Start with:  docker compose --profile tunnel up -d
+  # Configure the tunnel's public hostname in the Cloudflare Zero Trust dashboard to point at http://gsheets-mcp:8787,
+  # then put that stable https URL in PUBLIC_BASE_URL (.env). Set TRUST_PROXY=1 so per-IP rate limits see real client IPs.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      - gsheets-mcp
+
+  # Quick-tunnel alternative (no account, no token). WARNING: the trycloudflare.com URL is random and CHANGES on every
+  # restart. The URL is the OAuth issuer, so every OAuth connection (claude.ai) breaks and must be re-added, and you
+  # must update PUBLIC_BASE_URL each time. Fine for a quick try; use the named tunnel above for anything lasting.
+  # cloudflared-quick:
+  #   image: cloudflare/cloudflared:latest
+  #   profiles: ["tunnel-quick"]
+  #   command: tunnel --no-autoupdate --url http://gsheets-mcp:8787
+  #   depends_on:
+  #     - gsheets-mcp
+
+volumes:
+  gsmcp-data:
