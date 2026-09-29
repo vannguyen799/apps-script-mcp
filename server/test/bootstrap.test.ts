@@ -111,15 +111,11 @@ describe("owner bootstrap from ADMIN_USERNAME / ADMIN_PASSWORD (DESIGN.md 10.3)"
     expect(await accounts.bootstrapOwner("admin", "short")).toBeNull();
   });
 
-  it("the bootstrapped owner can use /account and the admin UI", async () => {
+  it("the bootstrapped owner can use /account", async () => {
     h = await makeHarness({ setup: false });
     await h.accounts.bootstrapOwner("boss", "a-long-enough-password");
     const acc = await fetch(`${h.publicUrl}/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "boss", password: "a-long-enough-password" }) });
     expect(acc.status).toBe(200);
-    const adm = await fetch(`${h.adminUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "boss", password: "a-long-enough-password" }) });
-    expect(adm.status).toBe(200);
-    const session = (await (await fetch(`${h.adminUrl}/api/session`, { headers: { cookie: (adm.headers.get("set-cookie") ?? "").split(";")[0]! } })).json()) as { authenticated: boolean };
-    expect(session).toMatchObject({ authenticated: true });
   });
 });
 

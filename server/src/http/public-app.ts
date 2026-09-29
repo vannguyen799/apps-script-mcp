@@ -55,7 +55,12 @@ export function createPublicApp(deps: PublicAppDeps): Express {
     res.json({ ok: true });
   });
 
-  // ---- /account: login, connections, PATs, usage (does not need the OAuth issuer to be configured) ----
+  // DESIGN.md 13: one port, and the only page is /account.
+  app.get("/", (_req, res) => {
+    res.redirect(302, "/account");
+  });
+
+  // ---- /account: login, connections, PATs, usage, settings, grants (does not need the OAuth issuer to be configured) ----
   app.use(
     "/account",
     createAccountRouter({
@@ -63,7 +68,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
       registry: deps.registry,
       pats: deps.pats,
       provider: deps.provider,
-      baseUrl: () => deps.baseUrl.get(),
+      baseUrl: deps.baseUrl,
       ipLimiter: deps.ipLimiter,
       usage: deps.usage,
       logger: log,
@@ -118,7 +123,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
     if (!base) {
       res.status(503).json({
         error: "public_base_url_not_configured",
-        error_description: "Set PUBLIC_BASE_URL or configure the public base URL in the admin UI to enable OAuth.",
+        error_description: "Set PUBLIC_BASE_URL or configure the public base URL in /account (Cài đặt) to enable OAuth.",
       });
       return;
     }

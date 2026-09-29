@@ -46,8 +46,6 @@ export interface AccountServiceDeps {
   /** 5 failures / 15 min per username. */
   userLimiter: FailureLimiter;
   now?: () => number;
-  /** The admin UI's in-memory sessions (AdminAuth fits), so a password change can end them too. */
-  adminSessions?: { destroyUserSessions(userId: string, exceptId?: string): void };
 }
 
 const view = (u: StoredUser): UserView => ({ id: u.id, username: u.username, role: u.role, createdAt: u.createdAt });
@@ -129,9 +127,9 @@ export class AccountService {
 
   /**
    * Changes the password after checking the current one (same rate limits as login). Every other session of the user ends:
-   * public sessions except `keep.publicSessionId`, admin UI sessions except `keep.adminSessionId`.
+   * sessions except `keep.publicSessionId`.
    */
-  async changePassword(userId: string, current: unknown, next: unknown, confirm: unknown, ip: string, keep: { publicSessionId?: string; adminSessionId?: string } = {}): Promise<void> {
+  async changePassword(userId: string, current: unknown, next: unknown, confirm: unknown, ip: string, keep: { publicSessionId?: string } = {}): Promise<void> {
     const user = this.getUser(userId);
     if (!user) throw new AccountError("NOT_FOUND", "Không tìm thấy tài khoản.");
     checkPassword(next);
@@ -148,7 +146,6 @@ export class AccountService {
       s.users[userId]!.passwordHash = passwordHash;
       for (const [h, v] of Object.entries(s.sessions)) if (v.userId === userId && h !== keepHash) delete s.sessions[h];
     });
-    this.deps.adminSessions?.destroyUserSessions(userId, keep.adminSessionId);
   }
 
   // ---- login -------------------------------------------------------------

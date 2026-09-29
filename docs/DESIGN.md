@@ -10,14 +10,16 @@ file disagree, fix one of them in the same change.
 
 | Component | Owns | Never does |
 |---|---|---|
-| MCP server (Docker) | MCP protocol, MCP client auth (OAuth 2.1 / PAT), business tools, request validation, signing requests to Apps Script, admin UI | Hold Google credentials; execute arbitrary code |
+| MCP server (Docker) | MCP protocol, MCP client auth (OAuth 2.1 / PAT), business tools, request validation, signing requests to Apps Script, `/account` | Hold Google credentials; execute arbitrary code |
 | Apps Script | Google authorization, spreadsheet allowlist (source of truth), re-validation, Sheets execution | Trust the MCP blindly; expose anything to anonymous callers without HMAC |
-| Tunnel (cloudflared / ngrok) | Public HTTPS to port 8787 only | Anything business-related; the server does not know a tunnel exists |
+| Tunnel (cloudflared / ngrok) | Public HTTPS to the single `PORT` (§13) | Anything business-related; the server does not know a tunnel exists |
 
 The business layer depends on a `SheetsGateway` port. `AppsScriptGateway` is one adapter; a future
 `GoogleApiGateway` (OAuth / Service Account) must be drop-in without changing tools or `SheetsService`.
 
 ## 2. Network surface
+
+> Superseded by §13: there is one port (`PORT`, default 38787). The two-port text below is historical.
 
 - Port **8787** — public app: `/mcp`, OAuth endpoints, `/.well-known/*`, `/healthz`. The only port a tunnel may target.
 - Port **8788** — admin UI + admin JSON API. Compose publishes it as `127.0.0.1:8788:8788` (never public).
@@ -25,6 +27,7 @@ The business layer depends on a `SheetsGateway` port. `AppsScriptGateway` is one
 ## 3. Authentication layers (independent credentials)
 
 ### 3.1 Admin UI (port 8788)
+> Removed in §13; its login, session and CSRF rules now apply to `/account`.
 - First start with no owner: the server creates one (§10.3): a default `admin` account with a random password printed
   once to stdout. There is no setup token and no first-run form. Change the password in the UI (§9.1).
 - Password stored as scrypt (N=2^15, r=8, p=1, 16-byte salt, 64-byte key).
@@ -37,9 +40,10 @@ The business layer depends on a `SheetsGateway` port. `AppsScriptGateway` is one
 - Login rate limit: 5 failures / 15 min per IP, then 429.
 
 ### 3.2 MCP client → MCP server (port 8787, public)
+> The port is now `PORT` (§13).
 MCP Authorization spec (OAuth 2.1). Use the SDK's `mcpAuthRouter` + `requireBearerAuth` with our own
 `OAuthServerProvider` implementation.
-- Issuer / resource base = `PUBLIC_BASE_URL` (env) or the value saved in the admin UI. When neither is set,
+- Issuer / resource base = `PUBLIC_BASE_URL` (env) or the value saved in `/account`. When neither is set,
   `/mcp` still works with PATs; OAuth metadata endpoints return 503 `public_base_url_not_configured`.
 - Dynamic Client Registration enabled (public clients, PKCE S256 required). Redirect URIs must be `https://…` or
   `http://localhost|127.0.0.1[:port]/…`.
@@ -257,7 +261,7 @@ evaluated code; the only capability boundary is the OAuth scopes the owner puts 
   - there is a 6-minute Apps Script limit;
   - it errors when the owner has not enabled it on the Apps Script page.
   `EVAL_DISABLED` maps to a clear message telling the user where to enable it.
-- The admin UI status shows "Chạy script: bật/tắt" from the last ping.
+- The `/account` connection list shows "Chạy script: bật/tắt" from the last ping.
 - Logs: action name, durationMs, resultCode only. Never code, args, values or eval error messages.
 
 ## 9. Accounts, multiple Apps Script connections, one-paste setup
@@ -277,15 +281,15 @@ This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 whe
   `^[a-z0-9._-]{3,32}$`, stored lowercase.
 - The owner is created at startup when none exists (§10.3): username `ADMIN_USERNAME` (default `admin`), password from
   `ADMIN_PASSWORD` or generated. There is no setup token or first-run form.
-- **Password change** (`POST /account/api/password` on 8787, `POST /api/password` on 8788; needs a session and the CSRF
+- **Password change** (`POST /account/api/password`; needs a session and the CSRF
   token): `{currentPassword, newPassword (min 10), confirmPassword}`. Rate-limited exactly like login (the same per-IP and
   per-username counters). A wrong current password answers 403 `FORBIDDEN`, not 401, so the UIs do not read it as "logged
-  out". On success every other session of the user ends (public sessions and admin UI sessions) and the current one stays.
+  out". On success every other session of the user ends (all sessions) and the current one stays.
 - **Lost password:** `node dist/cli.js reset-password` loads the same config and store (file or PostgreSQL), sets a new
   random password for the owner, removes all sessions and prints `Admin login: …`. The server rewrites the whole stored
-  document (also on shutdown), so it would overwrite the change: the command refuses to run when `127.0.0.1:PORT_PUBLIC/healthz`
+  document (also on shutdown), so it would overwrite the change: the command refuses to run when `127.0.0.1:PORT/healthz`
   answers. Stop the container, run it in a one-off container on the same volume/database, start the container again.
-- **Public session** (port 8787, needed for consent and `/account`):
+- **Public session** (§13: the single port, needed for consent and `/account`):
   - cookie `asmcp_sess`: random 32 bytes; only the hash is persisted with `userId`, `createdAt`, `expiresAt` (30 days).
   - Flags: `HttpOnly; SameSite=Lax; Path=/`, plus `Secure` when the public base is https. Lax is required because the
     OAuth redirect from Claude is a cross-site top-level GET.
@@ -325,7 +329,7 @@ This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 whe
   - my PATs: create (choose connection + scopes, shown once), list, revoke;
   - logout / logout everywhere.
   Vietnamese UI, same visual style as the admin UI.
-- Admin UI (8788, owner): server settings, connections (read, remove), grants and PATs (revoke), usage (§10.2), plus the
+- Admin UI (8788, owner; removed in §13, these features now live in `/account` under "Cài đặt"): server settings, connections (read, remove), grants and PATs (revoke), usage (§10.2), plus the
   same "Thêm Apps Script" flow. The old single-link pairing UI is removed.
 
 ### 9.3 Apps Script side
@@ -444,7 +448,7 @@ Where the server refines §9 (behaviour is otherwise as written above):
 - Counters live in memory and are merged into the state every 60 s and on shutdown, so a busy server does not rewrite the
   state on every call. A crash loses at most the last minute. A failure to count or to write never affects a tool call.
 - Days older than 30 (today and the 29 before it) are dropped whenever the counters are merged.
-- Views: a plain day × tool table ("Lượt dùng 30 ngày") on `/account` (`GET /account/api/usage`) and on the admin UI
+- Views: a plain day × tool table ("Lượt dùng 30 ngày") on `/account` (`GET /account/api/usage`)
   (`GET /api/usage`). Both return `{usage: [{day, tool, calls, errors}]}`, newest day first.
 
 ### 10.3 Owner bootstrap from env
@@ -458,22 +462,22 @@ The state no longer has a setup-token hash; loading drops a stored one.
 
 ## 11. Built-in tunnel (env-enabled)
 
-The container can expose port 8787 publicly by itself, so no separate tunnel service is needed. `src/tunnel/` is
+The container can expose its port (`PORT`, default 38787, §13) publicly by itself, so no separate tunnel service is needed. `src/tunnel/` is
 networking only. It starts a child process and reports the public URL through a callback. Business code never
 imports it; only `main.ts` wires it.
 
 | Env | Behaviour |
 |---|---|
 | unset / `TUNNEL=off` | No tunnel (default). |
-| `TUNNEL=cloudflare` | Quick tunnel: `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8787`. The `https://*.trycloudflare.com` URL is read from cloudflared's output. It is random and **changes on every restart**, so it suits trying things out. |
+| `TUNNEL=cloudflare` | Quick tunnel: `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:38787`. The `https://*.trycloudflare.com` URL is read from cloudflared's output. It is random and **changes on every restart**, so it suits trying things out. |
 | `TUNNEL=cloudflare` + `CLOUDFLARE_TUNNEL_TOKEN` | Named tunnel: `cloudflared tunnel --no-autoupdate run --token …`. The hostname is configured in the Cloudflare dashboard, so `PUBLIC_BASE_URL` must be set to it (startup error otherwise). |
-| `TUNNEL=ngrok` + `NGROK_AUTHTOKEN` (+ `NGROK_DOMAIN`) | `ngrok http 127.0.0.1:8787 --log stdout --log-format json` (+ `--url https://<NGROK_DOMAIN>`). The URL is read from the JSON log line `url`. A free ngrok account includes one **static domain**: a stable URL at no cost, which is the recommended option. |
+| `TUNNEL=ngrok` + `NGROK_AUTHTOKEN` (+ `NGROK_DOMAIN`) | `ngrok http 127.0.0.1:38787 --log stdout --log-format json` (+ `--url https://<NGROK_DOMAIN>`). The URL is read from the JSON log line `url`. A free ngrok account includes one **static domain**: a stable URL at no cost, which is the recommended option. |
 
 - **Public base URL precedence:** `PUBLIC_BASE_URL` env > URL reported by the tunnel > the value saved in the admin UI.
-  The tunnel URL is a runtime value: it is not persisted, and the OAuth router is rebuilt when it changes. The admin UI
-  and `/account` show it as the MCP endpoint, and the container log prints `Public URL: https://…/mcp` once it is known.
+  The tunnel URL is a runtime value: it is not persisted, and the OAuth router is rebuilt when it changes. `/account`
+  shows it as the MCP endpoint, and the container log prints `Public URL: https://…/mcp` once it is known.
 - **Proxy trust:** with a built-in tunnel, the proxy is local, so express trusts `X-Forwarded-For` only from loopback
-  (`trust proxy = "loopback"`) unless `TRUST_PROXY` is set explicitly. Direct connections to 8787 cannot spoof their IP.
+  (`trust proxy = "loopback"`) unless `TRUST_PROXY` is set explicitly. Direct connections to the port cannot spoof their IP.
 - **Supervision:** if the child exits, restart it with backoff (1 s, doubling to 60 s max). Its output goes to the log with
   the prefix `[tunnel]`, token values redacted. On shutdown the child is killed.
 - **Secrets:** tokens are passed to the child via its environment (`TUNNEL_TOKEN`, `NGROK_AUTHTOKEN`), never as argv, so
@@ -502,7 +506,7 @@ Goal: login → paste sheet links → install script → copy the Claude command
     - a ready `claude mcp add --transport http apps-script <base>/mcp --header "Authorization: Bearer <PAT>"` command,
       where the PAT is **auto-created** for that connection with scopes `sheets.read sheets.write` and label
       "Claude Code (tự tạo)". It is shown once, with a copy button. `<base>` is the public base if set, else
-      `http://localhost:8787`.
+      `http://localhost:38787`.
 - **Apps Script, on a successful setup pair:**
   - for each `ASMCP_SETUP_.spreadsheets` entry not already on the allowlist, try `SpreadsheetApp.openById(id).getName()`;
     on success add `{id, name, alias: name, access}` (alias uniqueness as today, with a numeric suffix on collision);
@@ -511,3 +515,25 @@ Goal: login → paste sheet links → install script → copy the Claude command
   - This runs only for the setup pair, and only once per token. The owner authored the list by pasting the code, so the
     server still has no way to change the allowlist.
 - The server shows "Đã thêm N bảng tính" and lists the failed IDs with "mở trang Apps Script để thêm thủ công".
+
+## 13. Single port (v0.2.0)
+
+This section supersedes the two-port layout of §2, §3.1, and the admin UI parts of §9.2, §10 and §11.
+
+- **One HTTP port, `PORT`, default `38787`.** It is uncommon, so conflicts are unlikely. It is fixed rather than random,
+  because Claude needs a stable URL. It serves `/mcp`, the OAuth endpoints, `/account`, `/healthz` and `/`, which
+  redirects to `/account`.
+- **The 8788 admin app is removed:** its server, UI, sessions, Host allowlist, `PORT_ADMIN`, `PORT_PUBLIC` and
+  `ADMIN_ALLOWED_HOSTS`. Its remaining features move into `/account` under a "Cài đặt" section:
+  - the public base URL setting (disabled when set by env or tunnel, with the source shown);
+  - the MCP endpoint;
+  - the OAuth connections (grants) list with revoke.
+  The single owner is the only account, so every logged-in session may use them.
+- **Security is unchanged in substance.** The owner password already authorizes Claude through consent, so putting
+  settings behind the same login adds no new capability to an attacker who has it. `/account` keeps:
+  - the per-IP and per-username login limits;
+  - the session cookie and CSRF;
+  - the Origin check;
+  - the nonce CSP and `frame-ancestors 'none'`.
+- The tunnel, the healthcheck, the reset-password CLI's running-server check, the installers, compose, the Dockerfile
+  `EXPOSE`, the README and DOCKERHUB all use the single port. The installers open `http://localhost:38787/account`.

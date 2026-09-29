@@ -8,6 +8,7 @@ import type { GsmcpOAuthProvider } from "../auth/oauth-provider.js";
 import type { PatService } from "../auth/pat.js";
 import { clearSessionCookie, readSessionId, setSessionCookie } from "../auth/session-cookie.js";
 import type { ConnectionRegistry } from "../connection/connection-registry.js";
+import type { PublicBaseUrl } from "../settings/public-base-url.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import { safeEqualStr } from "../util/crypto.js";
@@ -22,8 +23,8 @@ export interface AccountRouterDeps {
   registry: ConnectionRegistry;
   pats: PatService;
   provider: GsmcpOAuthProvider;
-  /** Current public base URL (for the Secure flag and the Origin check). */
-  baseUrl: () => string | undefined;
+  /** The public base URL (Secure flag, Origin check, and the "Cài đặt" setting; DESIGN.md 13). */
+  baseUrl: PublicBaseUrl;
   ipLimiter: FailureLimiter;
   usage: UsageService;
   logger?: Logger;
@@ -33,12 +34,12 @@ export interface AccountRouterDeps {
 
 type SessionRequest = Request & { pubSession?: PublicSession };
 
-/** The public /account pages and JSON API (DESIGN.md 9.1, 9.2): login, connections, PATs, usage. */
+/** The public /account pages and JSON API (DESIGN.md 9.1, 9.2): login, connections, PATs, usage, settings, grants. */
 export function createAccountRouter(deps: AccountRouterDeps): Router {
   const log = deps.logger ?? nullLogger;
   const html = deps.indexHtml ?? readFileSync(new URL("../account-ui/index.html", import.meta.url), "utf8");
   const router = express.Router();
-  const secure = () => (deps.baseUrl() ?? "").startsWith("https:");
+  const secure = () => (deps.baseUrl.get() ?? "").startsWith("https:");
   const ipOf = (req: Request) => req.ip ?? "unknown";
   const body = (req: Request): Record<string, unknown> => (req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {});
   const wrap =
@@ -69,7 +70,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // ---- write guards: Origin, JSON only -------------------------------------------
   router.use((req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
-    if (!originAllowed(req, deps.baseUrl())) {
+    if (!originAllowed(req, deps.baseUrl.get())) {
       res.status(403).json({ error: { code: "BAD_ORIGIN", message: "Origin không hợp lệ." } });
       return;
     }
@@ -96,7 +97,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     "/api/session",
     wrap((req, res) => {
       const s = sessionOf(req);
-      res.json({ authenticated: !!s, csrfToken: s?.csrf ?? null, username: s?.user.username ?? null, role: s?.user.role ?? null, setupAvailable: deps.registry.setupAvailable, publicBase: deps.baseUrl() ?? null });
+      res.json({ authenticated: !!s, csrfToken: s?.csrf ?? null, username: s?.user.username ?? null, role: s?.user.role ?? null, setupAvailable: deps.registry.setupAvailable, publicBase: deps.baseUrl.get() ?? null });
     }),
   );
 
@@ -209,6 +210,44 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.get("/api/usage", (_req, res) => {
     res.json({ usage: deps.usage.rows() });
   });
+
+  // ---- "Cài đặt" (DESIGN.md 13): public base URL, MCP endpoint, OAuth grants ----------------
+  // A tunnel-reported URL overrides the saved one, so it locks the setting just like PUBLIC_BASE_URL does.
+  const settingsEditable = () => deps.baseUrl.editable && deps.baseUrl.source() !== "tunnel";
+  const settingsPayload = () => {
+    const base = deps.baseUrl.get() ?? null;
+    return {
+      publicBaseUrl: { value: base, source: deps.baseUrl.source(), editable: settingsEditable() },
+      mcpEndpoint: deps.baseUrl.mcpEndpoint(),
+    };
+  };
+  router.get("/api/settings", (_req, res) => {
+    res.json(settingsPayload());
+  });
+  router.put(
+    "/api/settings/public-base-url",
+    wrap(async (req, res) => {
+      if (!settingsEditable()) throw new HttpError(409, "LOCKED", "Địa chỉ công khai đang được đặt bởi PUBLIC_BASE_URL hoặc tunnel nên không thể sửa ở đây.");
+      const v = body(req).value;
+      try {
+        await deps.baseUrl.set(typeof v === "string" ? v : null);
+      } catch (e) {
+        throw new HttpError(400, "BAD_URL", (e as Error).message);
+      }
+      res.json(settingsPayload());
+    }),
+  );
+
+  router.get("/api/grants", (req, res) => {
+    res.json({ grants: deps.provider.listGrants(me(req)) });
+  });
+  router.delete(
+    "/api/grants/:id",
+    wrap(async (req, res) => {
+      if (!(await deps.provider.revokeGrant(String(req.params.id), me(req)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy kết nối OAuth.");
+      res.json({ ok: true });
+    }),
+  );
 
   router.get("/api/pats", (req, res) => {
     res.json({ pats: deps.pats.list(me(req)) });

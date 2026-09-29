@@ -187,10 +187,10 @@ describe("public CSRF, Origin and content-type", () => {
     const req = (origin: string | undefined, host: string) => ({ headers: { origin, host } }) as unknown as Request;
     expect(originAllowed(req(undefined, "x"), "https://a.example.com")).toBe(true);
     expect(originAllowed(req("https://a.example.com", "a.example.com"), "https://a.example.com")).toBe(true);
-    expect(originAllowed(req("http://localhost:8787", "localhost:8787"), "https://a.example.com")).toBe(true);
-    expect(originAllowed(req("http://127.0.0.1:8787", "127.0.0.1:8787"), "https://a.example.com")).toBe(true);
-    expect(originAllowed(req("http://evil.example:8787", "evil.example:8787"), "https://a.example.com")).toBe(false);
-    expect(originAllowed(req("http://localhost:1", "localhost:8787"), "https://a.example.com")).toBe(false);
+    expect(originAllowed(req("http://localhost:38787", "localhost:38787"), "https://a.example.com")).toBe(true);
+    expect(originAllowed(req("http://127.0.0.1:38787", "127.0.0.1:38787"), "https://a.example.com")).toBe(true);
+    expect(originAllowed(req("http://evil.example:38787", "evil.example:38787"), "https://a.example.com")).toBe(false);
+    expect(originAllowed(req("http://localhost:1", "localhost:38787"), "https://a.example.com")).toBe(false);
     expect(originAllowed(req("http://evil.example", "evil.example"), undefined)).toBe(true); // nothing configured to compare with
     expect(originAllowed(req("http://evil.example", "other.example"), undefined)).toBe(false);
     expect(originAllowed(req("not a url", "x"), "https://a.example.com")).toBe(false);

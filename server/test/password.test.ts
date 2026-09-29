@@ -15,11 +15,6 @@ const post = (base: string, path: string, opts: { body?: unknown; cookie?: strin
   });
 const get = (base: string, path: string, cookie: string) => fetch(`${base}${path}`, { headers: { cookie } });
 
-async function adminLogin(username: string, password: string) {
-  const r = await post(h.adminUrl, "/api/login", { body: { username, password } });
-  if (r.status !== 200) throw new Error(`admin login failed ${r.status}`);
-  return { cookie: (r.headers.get("set-cookie") ?? "").split(";")[0]!, csrf: ((await r.json()) as { csrfToken: string }).csrfToken };
-}
 const NEW = "a-brand-new-password-1";
 
 describe("password change from /account", () => {
@@ -27,7 +22,6 @@ describe("password change from /account", () => {
     h = await makeHarness();
     const a = await accountLogin(h, h.username, h.password);
     const b = await accountLogin(h, h.username, h.password);
-    const admin = await adminLogin(h.username, h.password);
     const url = `${h.publicUrl}`;
     const body = { currentPassword: h.password, newPassword: NEW, confirmPassword: NEW };
 
@@ -44,41 +38,20 @@ describe("password change from /account", () => {
     expect((await post(url, "/account/api/password", { cookie: a.cookie, csrf: a.csrf, body })).status).toBe(200);
     expect((await get(url, "/account/api/connections", a.cookie)).status).toBe(200); // the current session stays
     expect((await get(url, "/account/api/connections", b.cookie)).status).toBe(401); // other public session is gone
-    expect((await get(h.adminUrl, "/api/status", admin.cookie)).status).toBe(401); // and so is the admin UI session
     await expect(accountLogin(h, h.username, h.password)).rejects.toThrow(/401/);
     await expect(accountLogin(h, h.username, NEW)).resolves.toBeTruthy();
     expect(JSON.stringify(h.store.state)).not.toContain(NEW);
   });
 });
 
-describe("password change from the admin UI", () => {
-  it("needs the CSRF token and the current password; ends other admin and public sessions, keeps this one", async () => {
-    h = await makeHarness();
-    const x = await adminLogin(h.username, h.password);
-    const y = await adminLogin(h.username, h.password);
-    const pub = await accountLogin(h, h.username, h.password);
-    const body = { currentPassword: h.password, newPassword: NEW, confirmPassword: NEW };
-
-    expect((await post(h.adminUrl, "/api/password", { cookie: x.cookie, body })).status).toBe(403);
-    expect((await post(h.adminUrl, "/api/password", { body, csrf: x.csrf })).status).toBe(401);
-    expect((await post(h.adminUrl, "/api/password", { cookie: x.cookie, csrf: x.csrf, body: { ...body, currentPassword: "nope-nope-nope" } })).status).toBe(403);
-    expect((await get(h.adminUrl, "/api/status", y.cookie)).status).toBe(200);
-
-    expect((await post(h.adminUrl, "/api/password", { cookie: x.cookie, csrf: x.csrf, body })).status).toBe(200);
-    expect((await get(h.adminUrl, "/api/status", x.cookie)).status).toBe(200);
-    expect((await get(h.adminUrl, "/api/status", y.cookie)).status).toBe(401);
-    expect((await get(h.publicUrl, "/account/api/connections", pub.cookie)).status).toBe(401);
-    expect((await post(h.adminUrl, "/api/login", { body: { username: h.username, password: h.password } })).status).toBe(401);
-    expect((await post(h.adminUrl, "/api/login", { body: { username: h.username, password: NEW } })).status).toBe(200);
-  });
-
+describe("password change rate limit", () => {
   it("is rate limited like login: repeated wrong current passwords end in 429", async () => {
     h = await makeHarness();
-    const x = await adminLogin(h.username, h.password); // the login itself forgave its failure
+    const x = await accountLogin(h, h.username, h.password); // the login itself forgave its failure
     const bad = { currentPassword: "nope-nope-nope", newPassword: NEW, confirmPassword: NEW };
     const codes: number[] = [];
-    for (let i = 0; i < 7; i++) codes.push((await post(h.adminUrl, "/api/password", { cookie: x.cookie, csrf: x.csrf, body: bad })).status);
+    for (let i = 0; i < 7; i++) codes.push((await post(h.publicUrl, "/account/api/password", { cookie: x.cookie, csrf: x.csrf, body: bad })).status);
     expect(codes).toEqual([403, 403, 403, 403, 403, 429, 429]);
-    expect((await post(h.adminUrl, "/api/password", { cookie: x.cookie, csrf: x.csrf, body: { ...bad, currentPassword: h.password } })).status).toBe(429);
+    expect((await post(h.publicUrl, "/account/api/password", { cookie: x.cookie, csrf: x.csrf, body: { ...bad, currentPassword: h.password } })).status).toBe(429);
   });
 });

@@ -187,6 +187,25 @@ code{overflow-wrap:anywhere}
       <table><thead><tr><th>Ngày</th><th>Tool</th><th>Lượt</th><th>Lỗi</th></tr></thead><tbody id="usage-list"></tbody></table>
     </section>
 
+    <section class="card" id="settings-card">
+      <h2>Cài đặt</h2>
+      <h3 class="flush">Địa chỉ công khai của server</h3>
+      <p class="muted">Dùng làm issuer OAuth và địa chỉ MCP mà claude.ai gọi tới. Cần là https (http chỉ cho localhost), không có đường dẫn.</p>
+      <form id="form-base">
+        <label for="base-url">Public base URL</label>
+        <input id="base-url" type="url" placeholder="https://mcp.example.com" autocomplete="off">
+        <p id="base-source" class="muted"></p>
+        <div class="row"><button id="btn-base-save" class="primary" type="submit">Lưu</button><button id="btn-base-clear" type="button">Xóa</button></div>
+        <div id="base-msg" class="msg hidden"></div>
+      </form>
+      <h3>MCP endpoint</h3>
+      <div class="mono" id="mcp-endpoint"></div>
+      <p id="mcp-none" class="muted hidden">Chưa có địa chỉ công khai: OAuth chưa hoạt động, nhưng PAT vẫn dùng được qua địa chỉ cục bộ.</p>
+      <h3>Kết nối OAuth đã cấp quyền</h3>
+      <p class="muted">Các ứng dụng (ví dụ claude.ai) đã được bạn cho phép. Thu hồi sẽ vô hiệu hóa token của chúng ngay.</p>
+      <table><thead><tr><th>Ứng dụng</th><th>Kết nối Apps Script</th><th>Quyền</th><th>Cấp lúc</th><th></th></tr></thead><tbody id="grant-list"></tbody></table>
+    </section>
+
     <section class="card">
       <h2>Kết nối Claude</h2>
       <p><strong>claude.ai (custom connector):</strong> Settings &rarr; Connectors &rarr; Add custom connector, dán URL:</p>
@@ -253,7 +272,7 @@ function route() {
 }
 
 function loadDash() {
-  return Promise.all([refreshConns(), refreshPats(), refreshUsage()]).then(function () {
+  return Promise.all([refreshConns(), refreshPats(), refreshUsage(), refreshSettings(), refreshGrants()]).then(function () {
     if ((params.get("add") === "1" || !connections.length) && !pendingId && $("add-card").classList.contains("hidden")) { params.delete("add"); startAdd(); }
   });
 }
@@ -325,7 +344,7 @@ function showStep2(pat) {
   show("s2-url-box", !!base); show("s2-nourl", !base);
   if (base) $("s2-url").textContent = base + "/mcp";
   show("s2-cmd-box", !!pat);
-  if (pat) $("s2-cmd").textContent = 'claude mcp add --transport http apps-script ' + (base || "http://localhost:8787") + '/mcp --header "Authorization: Bearer ' + pat + '"';
+  if (pat) $("s2-cmd").textContent = 'claude mcp add --transport http apps-script ' + (base || location.origin) + '/mcp --header "Authorization: Bearer ' + pat + '"';
   show("step2", true);
 }
 
@@ -403,6 +422,41 @@ function refreshUsage() {
   });
 }
 
+/* ---------- settings (DESIGN.md 13) ---------- */
+var SOURCES = { env: "đặt bởi biến môi trường PUBLIC_BASE_URL", tunnel: "do tunnel tích hợp báo về", ui: "đã lưu ở trang này" };
+function baseMsg(msg, ok) { var e = $("base-msg"); e.textContent = msg || ""; e.className = "msg " + (ok ? "ok" : "err") + (msg ? "" : " hidden"); }
+function applySettings(r) {
+  var b = r.publicBaseUrl;
+  $("base-url").value = b.value || ""; $("base-url").disabled = !b.editable;
+  $("btn-base-save").disabled = !b.editable; $("btn-base-clear").disabled = !b.editable;
+  $("base-source").textContent = b.value ? "Nguồn: " + (SOURCES[b.source] || "không rõ") + (b.editable ? "." : ". Không thể sửa ở đây.") : "Chưa đặt.";
+  show("mcp-none", !r.mcpEndpoint);
+  var ep = r.mcpEndpoint || location.origin + "/mcp";
+  $("mcp-endpoint").textContent = ep; $("help-url").textContent = ep;
+  $("help-cmd").textContent = 'claude mcp add --transport http apps-script ' + ep + ' --header "Authorization: Bearer <PAT>"';
+  if (me) me.publicBase = b.value;
+}
+function refreshSettings() { return api("GET", "/account/api/settings").then(applySettings); }
+function saveBase(value) {
+  baseMsg("");
+  return api("PUT", "/account/api/settings/public-base-url", { value: value })
+    .then(function (r) { applySettings(r); baseMsg("Đã lưu.", true); })
+    .catch(function (e) { baseMsg(e.message, false); });
+}
+function refreshGrants() {
+  return api("GET", "/account/api/grants").then(function (r) {
+    var tb = $("grant-list"); clear(tb);
+    if (!r.grants.length) { var tr0 = document.createElement("tr"); var c0 = td("Chưa có ứng dụng nào được cấp quyền."); c0.colSpan = 5; tr0.appendChild(c0); tb.appendChild(tr0); }
+    r.grants.forEach(function (g) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(g.clientName)); tr.appendChild(td(g.connectionLabel || "(đã xóa)")); tr.appendChild(td(g.scopes.join(", "))); tr.appendChild(td(fmt(g.createdAt)));
+      var act = document.createElement("td");
+      act.appendChild(btn("Thu hồi", "danger", function () { if (confirm("Thu hồi quyền của ứng dụng này?")) api("DELETE", "/account/api/grants/" + encodeURIComponent(g.id)).then(refreshGrants).catch(function (e) { notice(e.message); }); }));
+      tr.appendChild(act); tb.appendChild(tr);
+    });
+  });
+}
+
 /* ---------- events ---------- */
 $("form-login").addEventListener("submit", function (ev) {
   ev.preventDefault(); notice("");
@@ -410,6 +464,9 @@ $("form-login").addEventListener("submit", function (ev) {
     .then(function () { $("login-pw").value = ""; return route(); })
     .catch(function (e) { notice(e.message); });
 });
+
+$("form-base").addEventListener("submit", function (ev) { ev.preventDefault(); saveBase($("base-url").value.trim()); });
+$("btn-base-clear").addEventListener("click", function () { saveBase(""); });
 
 function pwMsg(msg, ok) { var e = $("pw-msg"); e.textContent = msg; e.className = "msg " + (ok ? "ok" : "err"); }
 $("form-pw").addEventListener("submit", function (ev) {

@@ -10,8 +10,7 @@ services:
     container_name: apps-script-mcp
     restart: unless-stopped
     ports:
-      - "8787:8787"              # public app (/mcp, OAuth, /healthz): the only port a tunnel may target
-      - "127.0.0.1:8788:8788"    # admin UI: loopback only, never publish this publicly
+      - "38787:38787"            # the single port: /mcp, OAuth, /account, /healthz (the port a tunnel targets)
     volumes:
       - asmcp-data:/data
     env_file:

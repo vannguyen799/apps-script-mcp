@@ -51,7 +51,7 @@ export class PatService {
     return { token, pat: rec };
   }
 
-  /** All PATs when `userId` is omitted (owner admin UI), else only that user's. */
+  /** All PATs when `userId` is omitted (all of them), else only that user's. */
   list(userId?: string): PatView[] {
     return Object.values(this.store.state.pats)
       .filter((p) => userId === undefined || p.userId === userId)
@@ -59,7 +59,7 @@ export class PatService {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  /** `userId` limits revocation to that user's own PATs; omit it for the owner admin UI. */
+  /** `userId` limits revocation to that user's own PATs; omit it to revoke any. */
   async revoke(id: string, userId?: string): Promise<boolean> {
     let found = false;
     await this.store.update((s) => {

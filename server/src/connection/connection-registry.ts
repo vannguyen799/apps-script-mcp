@@ -194,7 +194,7 @@ export class ConnectionRegistry {
     return { service: rt.service, evaluator };
   };
 
-  /** Direct gateway access for the owner's connection listing tools (admin/account "test" and spreadsheet list). */
+  /** Direct gateway access for the owner's connection listing tools ("test" and spreadsheet list). */
   gatewayFor(connectionId: string): SheetsGateway | undefined {
     const conn = this.store.state.connections[connectionId];
     return conn ? this.runtimeFor(conn).gateway : undefined;
@@ -279,7 +279,7 @@ export class ConnectionRegistry {
   }
 
   // ---- management -------------------------------------------------------------
-  /** `actorUserId` null means the owner acting from the admin UI (may remove anyone's). Returns false when not found / not theirs. */
+  /** `actorUserId` null means the owner acting from /account (may remove anyone's). Returns false when not found / not theirs. */
   async remove(connectionId: string, actorUserId: string | null): Promise<boolean> {
     const c = this.store.state.connections[connectionId];
     if (!c || (actorUserId !== null && c.userId !== actorUserId)) return false;

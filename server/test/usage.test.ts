@@ -269,19 +269,9 @@ describe("usage views", () => {
     expect(j.usage).toEqual([{ day: new Date().toISOString().slice(0, 10), tool: "read_range", calls: 2, errors: 1 }]);
   });
 
-  it("the admin UI API needs the owner session and returns the same rows", async () => {
+  it("the page carries a plain day x tool table with the Vietnamese heading, and every element the script uses exists", async () => {
     h = await makeHarness();
-    h.usage.record("search", true);
-    expect((await fetch(`${h.adminUrl}/api/usage`)).status).toBe(401);
-    const login = await fetch(`${h.adminUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: h.username, password: h.password }) });
-    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0]!;
-    const r = await fetch(`${h.adminUrl}/api/usage`, { headers: { cookie } });
-    expect(((await r.json()) as { usage: unknown[] }).usage).toEqual([{ day: new Date().toISOString().slice(0, 10), tool: "search", calls: 1, errors: 0 }]);
-  });
-
-  it("both pages carry a plain day x tool table with the Vietnamese heading, and every element the script uses exists", async () => {
-    h = await makeHarness();
-    for (const url of [`${h.publicUrl}/account`, h.adminUrl + "/"]) {
+    for (const url of [`${h.publicUrl}/account`]) {
       const html = await (await fetch(url)).text();
       expect(html).toContain("Lượt dùng 30 ngày");
       expect(html).toContain('id="usage-list"');

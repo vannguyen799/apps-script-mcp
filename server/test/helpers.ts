@@ -6,14 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import type { Express } from "express";
 import { AccountService } from "../src/auth/accounts.js";
-import { AdminAuth } from "../src/auth/admin-auth.js";
 import { GsmcpOAuthProvider } from "../src/auth/oauth-provider.js";
 import { hashPassword } from "../src/auth/password.js";
 import { PatService } from "../src/auth/pat.js";
 import { ConnectionRegistry } from "../src/connection/connection-registry.js";
 import type { EvalResult, ScriptEvaluator } from "../src/core/script/evaluator.js";
 import type * as G from "../src/core/sheets/gateway.js";
-import { createAdminApp } from "../src/http/admin-app.js";
 import { createPublicApp } from "../src/http/public-app.js";
 import { PublicBaseUrl } from "../src/settings/public-base-url.js";
 import { StateStore } from "../src/store/state-store.js";
@@ -85,7 +83,6 @@ export interface Harness {
   /** Gateways by connection id (created on demand for connections without one). */
   gateways: Map<string, FakeGateway>;
   evaluator: FakeEvaluator;
-  admin: AdminAuth;
   accounts: AccountService;
   pats: PatService;
   provider: GsmcpOAuthProvider;
@@ -94,9 +91,7 @@ export interface Harness {
   ipLimiter: FailureLimiter;
   userLimiter: FailureLimiter;
   publicApp: Express;
-  adminApp: Express;
   publicUrl: string;
-  adminUrl: string;
   /** Owner's username (admin) and password. */
   username: string;
   password: string;
@@ -137,8 +132,7 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const gateways = new Map<string, FakeGateway>();
   const ipLimiter = new FailureLimiter(5, 15 * 60_000);
   const userLimiter = new FailureLimiter(5, 15 * 60_000);
-  const admin = new AdminAuth();
-  const accounts = new AccountService({ store, ipLimiter, userLimiter, adminSessions: admin });
+  const accounts = new AccountService({ store, ipLimiter, userLimiter });
   const pats = new PatService(store);
   const baseUrl = new PublicBaseUrl(opts.envBase, store);
   const registry = new ConnectionRegistry({
@@ -167,11 +161,8 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
     ownerId = (await accounts.bootstrapOwner(username, password))!.id;
   }
   const publicApp = createPublicApp({ provider, baseUrl, accounts, registry, pats, usage, ipLimiter, evaluatorAvailable: !!opts.withEvaluator, trustProxy: false });
-  const adminApp = createAdminApp({ auth: admin, accounts, limiter: ipLimiter, registry, baseUrl, pats, provider, usage, allowedHosts: ["admin.internal"], trustProxy: false });
   const ps = await listen(publicApp);
-  const as = await listen(adminApp);
   const publicUrl = `http://127.0.0.1:${(ps.address() as AddressInfo).port}`;
-  const adminUrl = `http://127.0.0.1:${(as.address() as AddressInfo).port}`;
   if (opts.baseUrl !== false && !opts.envBase) await baseUrl.set(publicUrl);
 
   const addConnection = async (userId: string, label: string, gw?: FakeGateway): Promise<string> => {
@@ -210,13 +201,12 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   };
 
   return {
-    dir, store, usage, gateway, gateways, evaluator, admin, accounts, pats, provider, baseUrl, registry, ipLimiter, userLimiter, publicApp, adminApp, publicUrl, adminUrl,
+    dir, store, usage, gateway, gateways, evaluator, accounts, pats, provider, baseUrl, registry, ipLimiter, userLimiter, publicApp, publicUrl,
     username, password, ownerId, connectionId, addConnection, addMember,
     close: async () => {
       registry.stop();
       ps.closeAllConnections();
-      as.closeAllConnections();
-      await Promise.all([new Promise((r) => ps.close(r)), new Promise((r) => as.close(r))]);
+      await new Promise((r) => ps.close(r));
       await rm(dir, { recursive: true, force: true });
     },
   };

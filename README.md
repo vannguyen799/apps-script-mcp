@@ -39,11 +39,11 @@ irm https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.sh | sh
 ```
 
-Script tự tải image, chạy container với đúng port và volume, in ra dòng đăng nhập rồi mở trình duyệt vào **http://localhost:8788**:
+Script tự tải image, chạy container với đúng port và volume, in ra dòng đăng nhập rồi mở trình duyệt vào **http://localhost:38787/account** (`/` tự chuyển tới đó):
 ```
 Admin login: admin / <mật khẩu ngẫu nhiên 20 ký tự>  (đổi mật khẩu trong /account)
 ```
-Đây là tài khoản **chủ sở hữu**, tạo ở lần chạy đầu tiên. Hãy đổi mật khẩu ngay ở mục *Đổi mật khẩu* của `/account` hoặc trang admin.
+Đây là tài khoản **chủ sở hữu**, tạo ở lần chạy đầu tiên. Hãy đổi mật khẩu ngay ở mục *Đổi mật khẩu* của `/account`.
 Chạy lại script khi đã có tài khoản thì không có dòng đó và script in "Dùng tài khoản admin hiện có".
 Nếu shell đã đặt sẵn `TUNNEL`, `NGROK_AUTHTOKEN`, `NGROK_DOMAIN`, `CLOUDFLARE_TUNNEL_TOKEN` hoặc `PUBLIC_BASE_URL`, script chuyển chúng
 vào container (xem [Public qua tunnel](#public-qua-tunnel)), rồi in URL public (`Public URL: …`) và mở `/account` trên URL đó.
@@ -57,12 +57,12 @@ tự được chuyển sang định dạng mới: mật khẩu admin thành tài
 **Docker Desktop:**
 1. Tìm `kortisol/apps-script-mcp` và bấm **Run**.
 2. Mở **Optional settings** và điền:
-   - Ports: `8787` → `8787`, `8788` → `8788`.
+   - Ports: `38787` → `38787` (chỉ một port).
    - Volumes: tên `asmcp-data`, đường dẫn trong container là `/data`.
 3. Xem dòng đăng nhập ở tab **Logs** của container (`Admin login: admin / …`).
 
-Lưu ý: giao diện Docker Desktop mở cổng admin 8788 cho cả mạng LAN (vẫn cần mật khẩu). Script một dòng ở trên chỉ mở
-cổng này cho `localhost`, nên an toàn hơn.
+Lưu ý: cổng 38787 phục vụ cả `/account` lẫn `/mcp`, và mọi thứ đều cần đăng nhập bằng mật khẩu chủ sở hữu.
+Muốn chỉ dùng trên máy này, đặt Ports là `127.0.0.1:38787` → `38787` (hoặc dùng `-p 127.0.0.1:38787:38787` với `docker run`) và bật tunnel nếu cần public.
 
 **docker compose**:
 ```bash
@@ -74,7 +74,7 @@ docker compose logs apps-script-mcp | grep "Admin login"
 
 ### 2. Đăng nhập và làm theo trình hướng dẫn
 
-Mở **http://localhost:8787/account** (hoặc `https://<domain>/account` khi đã có tunnel, xem [Public qua tunnel](#public-qua-tunnel)) và đăng nhập bằng tài khoản chủ sở hữu.
+Mở **http://localhost:38787/account** (hoặc `https://<domain>/account` khi đã có tunnel, xem [Public qua tunnel](#public-qua-tunnel)) và đăng nhập bằng tài khoản chủ sở hữu.
 Khi chưa có kết nối nào, trình hướng dẫn tự mở:
 
 1. **Bước 1 - Kết nối Google.** Dán link các Google Sheet muốn dùng (mỗi dòng một link, có thể để trống) và chọn có cho Claude ghi hay không, rồi **Tiếp tục**.
@@ -173,7 +173,7 @@ ADMIN_PASSWORD=mat-khau-dai-it-nhat-10-ky-tu   # bỏ trống = mật khẩu ng�
 
 - Chỉ dùng khi **chưa có** chủ sở hữu. Các lần khởi động sau bỏ qua hai biến này và **không bao giờ ghi đè** mật khẩu.
 - `ADMIN_PASSWORD` ngắn hơn 10 ký tự thì server báo lỗi và không khởi động.
-- **Đổi mật khẩu:** mục *Đổi mật khẩu* trên `/account` hoặc trang admin (mật khẩu hiện tại + mật khẩu mới tối thiểu 10 ký tự + nhập lại).
+- **Đổi mật khẩu:** mục *Đổi mật khẩu* trên `/account` (mật khẩu hiện tại + mật khẩu mới tối thiểu 10 ký tự + nhập lại).
   Giới hạn thử sai như đăng nhập. Mọi phiên đăng nhập khác bị đăng xuất, phiên hiện tại được giữ. Nếu đặt `ADMIN_PASSWORD`, hãy xóa nó khỏi `.env` sau khi đổi.
 
 ### Quên mật khẩu
@@ -192,17 +192,17 @@ Với docker compose: `docker compose stop apps-script-mcp && docker compose run
 
 ## Lượt dùng
 
-Server đếm mỗi lần Claude gọi một tool: theo **ngày (UTC)** và **tên tool**, gồm số lượt và số lỗi, giữ 30 ngày. Xem ở bảng *Lượt dùng 30 ngày* trên `/account` và trên trang admin.
+Server đếm mỗi lần Claude gọi một tool: theo **ngày (UTC)** và **tên tool**, gồm số lượt và số lỗi, giữ 30 ngày. Xem ở bảng *Lượt dùng 30 ngày* trên `/account`.
 Chỉ có tên tool và hai con số: không ghi tài khoản, kết nối, token, vùng ô, dữ liệu, câu tìm kiếm, mã hay nội dung lỗi.
 Bộ đếm gom trong bộ nhớ và ghi vào trạng thái mỗi 60 giây và khi tắt server, nên nếu server sập đột ngột có thể mất tối đa một phút số liệu.
 
 ## Public qua tunnel
 
-Chỉ cổng **8787** được phép public (gồm `/mcp`, OAuth, `/account`, `/healthz`). Trang admin **8788** chỉ bind `127.0.0.1`.
+Server chỉ dùng **một cổng**, `PORT` (mặc định **38787**), gồm `/mcp`, OAuth, `/account`, `/healthz`; `/` tự chuyển tới `/account`. Đó cũng là cổng để trỏ tunnel tới.
 Vì `/account` và trang cấp quyền nằm trên cổng public, chỉ chủ sở hữu (đăng nhập bằng tài khoản trên server) mới kết nối được Claude.
 
 Container có sẵn tunnel, bật bằng biến môi trường (trong `.env` hoặc `-e`), không cần service riêng. Khi có URL, log in ra
-`Public URL: https://…/mcp`, và URL đó được dùng làm base URL (thứ tự ưu tiên: `PUBLIC_BASE_URL` > URL của tunnel > giá trị lưu ở trang admin).
+`Public URL: https://…/mcp`, và URL đó được dùng làm base URL (thứ tự ưu tiên: `PUBLIC_BASE_URL` > URL của tunnel > giá trị lưu ở `/account` > Cài đặt).
 Khi bật tunnel, server chỉ tin `X-Forwarded-For` từ loopback (`TRUST_PROXY` mặc định `loopback`), nên IP giả không qua được.
 Tunnel tự khởi động lại (chờ 1 giây, tăng gấp đôi tới 60 giây) nếu bị dừng; token truyền qua biến môi trường của tiến trình con, không nằm trên dòng lệnh.
 
@@ -215,7 +215,7 @@ NGROK_DOMAIN=ten-cua-ban.ngrok-free.app    # dashboard.ngrok.com > Domains, ch�
 ```
 
 **Cloudflare named tunnel** (cho ai có domain riêng, URL cố định): tạo tunnel trong Cloudflare Zero Trust, đặt public hostname trỏ
-tới `http://localhost:8787`, rồi:
+tới `http://localhost:38787`, rồi:
 
 ```env
 TUNNEL=cloudflare
@@ -236,8 +236,7 @@ Ba lớp credential độc lập, lộ một lớp không lộ lớp khác:
 | Lớp | Cơ chế |
 |---|---|
 | Claude → MCP | OAuth 2.1 + PKCE (DCR; trang cấp quyền yêu cầu đăng nhập tài khoản trên server và chọn kết nối của chính bạn; access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Grant, token và PAT gắn với `{tài khoản, kết nối}`: mỗi lệnh gọi chỉ đi tới kết nối đó, không bao giờ lấy từ tham số của tool. Scope `sheets.read` / `sheets.write` (và `script.eval`, chỉ khi xin rõ ràng). Chỉ lưu hash. Không đặt token trong URL. |
-| Tài khoản (`/account`, cổng public) | Mật khẩu scrypt, cookie session `HttpOnly; SameSite=Lax` (+`Secure` khi base URL là https) chỉ lưu hash, CSRF token theo phiên, kiểm tra Origin, rate-limit 5 lần sai / 15 phút theo IP **và** theo tên đăng nhập, scrypt giả cho tên không tồn tại. |
-| Trang admin | Chủ sở hữu, chỉ loopback, mật khẩu scrypt (mật khẩu ngẫu nhiên in một lần ở lần chạy đầu), cookie session HttpOnly/SameSite=Strict, CSRF token, kiểm tra Host/Origin, rate-limit. |
+| Tài khoản (`/account`, gồm cả Cài đặt; cùng cổng với `/mcp`) | Mật khẩu scrypt (mật khẩu ngẫu nhiên in một lần ở lần chạy đầu), cookie session `HttpOnly; SameSite=Lax` (+`Secure` khi base URL là https) chỉ lưu hash, CSRF token theo phiên, kiểm tra Origin, CSP nonce, rate-limit 5 lần sai / 15 phút theo IP **và** theo tên đăng nhập, scrypt giả cho tên không tồn tại. |
 | MCP → Apps Script | HMAC-SHA256 trên mọi request (timestamp ±5 phút, nonce chống replay), response cũng được ký. Secret được tạo lúc pairing và không bao giờ hiển thị. |
 | Apps Script → Sheets | Quyền Google của chính bạn. Allowlist kiểm tra *trước khi* mở file, và quyền ghi tách riêng cho từng file. |
 

@@ -7,7 +7,7 @@ import { openStateStore } from "./store/open-store.js";
 async function main(): Promise<void> {
   if (process.argv[2] !== "reset-password") throw new Error("usage: node dist/cli.js reset-password");
   const config = loadConfig();
-  const running = await fetch(`http://127.0.0.1:${config.portPublic}/healthz`, { signal: AbortSignal.timeout(1500) }).then(() => true, () => false);
+  const running = await fetch(`http://127.0.0.1:${config.port}/healthz`, { signal: AbortSignal.timeout(1500) }).then(() => true, () => false);
   if (running) throw new Error("the server is running and would overwrite the change: stop it first (docker stop apps-script-mcp), run this in a one-off container, then start it again");
   const store = await openStateStore(config, createLogger("error"));
   await store.load();

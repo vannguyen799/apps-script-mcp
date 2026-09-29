@@ -91,18 +91,16 @@ describe("what is gone", () => {
       const r = await fetch(`${h.publicUrl}${p}`, { method: p.endsWith("accept") ? "POST" : "GET", headers: { "content-type": "application/json" }, body: p.endsWith("accept") ? "{}" : undefined });
       expect(r.status, p).toBe(404);
     }
-    const login = await fetch(`${h.adminUrl}/api/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: h.username, password: h.password }) });
-    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0]!;
-    const csrf = ((await login.json()) as { csrfToken: string }).csrfToken;
-    for (const [method, p] of [["GET", "/api/users"], ["GET", "/api/invites"], ["POST", "/api/invites"], ["DELETE", "/api/users/x"], ["POST", "/api/users/x/disabled"]] as const) {
-      const r = await fetch(`${h.adminUrl}${p}`, { method, headers: { cookie, "x-csrf-token": csrf, "content-type": "application/json" }, body: method === "GET" ? undefined : "{}" });
+    const owner = await accountLogin(h, h.username, h.password);
+    for (const [method, p] of [["GET", "/account/api/users"], ["GET", "/account/api/invites"], ["POST", "/account/api/invites"], ["DELETE", "/account/api/users/x"], ["POST", "/account/api/users/x/disabled"]] as const) {
+      const r = await fetch(`${h.publicUrl}${p}`, { method, headers: { cookie: owner.cookie, "x-csrf-token": owner.csrf, "content-type": "application/json" }, body: method === "GET" ? undefined : "{}" });
       expect(r.status, `${method} ${p}`).toBe(404);
     }
   });
 
   it("the pages carry no invite or user-management UI", async () => {
     h = await makeHarness();
-    for (const html of [await (await fetch(`${h.publicUrl}/account`)).text(), await (await fetch(`${h.adminUrl}/`)).text()]) {
+    for (const html of [await (await fetch(`${h.publicUrl}/account`)).text()]) {
       expect(html).not.toMatch(/lời mời|invite/i);
       expect(html).not.toContain("Người dùng");
     }

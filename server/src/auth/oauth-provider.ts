@@ -475,7 +475,7 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
   }
 
   // ---- admin / account views ---------------------------------------------
-  /** All grants when `userId` is omitted (owner admin UI), else only that user's. */
+  /** All grants when `userId` is omitted (all of them), else only that user's. */
   listGrants(userId?: string): GrantView[] {
     const s = this.store.state;
     return Object.values(s.oauth.grants)

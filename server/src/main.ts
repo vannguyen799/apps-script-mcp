@@ -2,13 +2,11 @@ import { spawn } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import type { Server } from "node:http";
 import { AccountService } from "./auth/accounts.js";
-import { AdminAuth } from "./auth/admin-auth.js";
 import { GsmcpOAuthProvider } from "./auth/oauth-provider.js";
 import { PatService } from "./auth/pat.js";
 import { loadConfig } from "./config.js";
 import { ConnectionRegistry } from "./connection/connection-registry.js";
 import { loadBundle } from "./connection/setup-bundle.js";
-import { createAdminApp } from "./http/admin-app.js";
 import { createPublicApp } from "./http/public-app.js";
 import { createLogger } from "./log.js";
 import { PublicBaseUrl } from "./settings/public-base-url.js";
@@ -27,10 +25,9 @@ async function main(): Promise<void> {
   log.info("storage_ready", { backend: config.databaseUrl ? "postgres" : "local" });
   const usage = new UsageService(store, { logger: log });
 
-  const ipLimiter = new FailureLimiter(5, 15 * 60_000); // login / password-change failures per IP (admin UI, /account, consent)
+  const ipLimiter = new FailureLimiter(5, 15 * 60_000); // login / password-change failures per IP (/account, consent)
   const userLimiter = new FailureLimiter(5, 15 * 60_000); // login failures per username
-  const admin = new AdminAuth();
-  const accounts = new AccountService({ store, ipLimiter, userLimiter, adminSessions: admin });
+  const accounts = new AccountService({ store, ipLimiter, userLimiter });
   const pats = new PatService(store);
   const baseUrl = new PublicBaseUrl(config.publicBaseUrl, store);
   const bundle = await loadBundle(config.appsScriptBundlePath, log);
@@ -57,19 +54,6 @@ async function main(): Promise<void> {
     trustProxy: config.trustProxy,
     logger: log,
   });
-  const adminApp = createAdminApp({
-    auth: admin,
-    accounts,
-    limiter: ipLimiter,
-    registry,
-    baseUrl,
-    pats,
-    provider,
-    usage,
-    allowedHosts: config.adminAllowedHosts,
-    trustProxy: config.trustProxy,
-    logger: log,
-  });
 
   // DESIGN.md 10.3: with no owner yet, create one (ADMIN_USERNAME / ADMIN_PASSWORD, else a random password printed once).
   // Deliberately bypasses the logger: a generated password is printed once, to stdout only.
@@ -77,8 +61,7 @@ async function main(): Promise<void> {
   if (owner && config.adminPassword !== undefined) log.info("owner_bootstrapped_from_env");
 
   const servers: Server[] = [
-    publicApp.listen(config.portPublic, () => log.info("public_listening", { port: config.portPublic })),
-    adminApp.listen(config.portAdmin, () => log.info("admin_listening", { port: config.portAdmin })),
+    publicApp.listen(config.port, () => log.info("listening", { port: config.port })),
   ];
   registry.start();
   usage.start();
@@ -90,8 +73,8 @@ async function main(): Promise<void> {
   };
   const tunnel = config.tunnel
     ? new TunnelSupervisor({
-        spec: tunnelSpec(config.tunnel, config.portPublic),
-        // The child gets only its own variables (no admin password, database URL...) and a HOME for its config.
+        spec: tunnelSpec(config.tunnel, config.port),
+        // The child gets only its own variables (no owner password, database URL...) and a HOME for its config.
         spawn: (bin, args, env) => spawn(bin, args, { env: { ...env, HOME: homedir() }, stdio: ["ignore", "pipe", "pipe"] }),
         logger: log,
         onUrl: (url) => {

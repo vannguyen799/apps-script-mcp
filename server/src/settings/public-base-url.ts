@@ -5,7 +5,7 @@ export type BaseUrlSource = "env" | "tunnel" | "ui" | null;
 
 /**
  * The issuer / resource base (DESIGN.md 11): PUBLIC_BASE_URL (env, wins and locks the setting) > the URL reported by the
- * built-in tunnel (runtime only, never persisted) > the value saved in the admin UI.
+ * built-in tunnel (runtime only, never persisted) > the value saved in /account.
  */
 export class PublicBaseUrl {
   constructor(

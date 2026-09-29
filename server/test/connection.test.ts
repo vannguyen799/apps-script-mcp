@@ -378,12 +378,17 @@ describe("logger", () => {
 
 describe("config", () => {
   it("defaults and parsing", () => {
-    expect(loadConfig({})).toMatchObject({ portPublic: 8787, portAdmin: 8788, dataDir: "/data", publicBaseUrl: undefined, adminAllowedHosts: [], logLevel: "info", trustProxy: false, appsScriptBundlePath: "/app/apps-script/Code.gs" });
+    expect(loadConfig({})).toMatchObject({ port: 38787, dataDir: "/data", publicBaseUrl: undefined, logLevel: "info", trustProxy: false, appsScriptBundlePath: "/app/apps-script/Code.gs" });
     expect(loadConfig({ APPS_SCRIPT_BUNDLE_PATH: " /x/Code.gs " }).appsScriptBundlePath).toBe("/x/Code.gs");
-    const c = loadConfig({ PORT_PUBLIC: "1", PUBLIC_BASE_URL: "https://a.example.com/", ADMIN_ALLOWED_HOSTS: "A.com, b.com ", TRUST_PROXY: "2", LOG_LEVEL: "debug" });
-    expect(c).toMatchObject({ portPublic: 1, publicBaseUrl: "https://a.example.com", adminAllowedHosts: ["a.com", "b.com"], trustProxy: 2, logLevel: "debug" });
+    const c = loadConfig({ PORT: "1", PUBLIC_BASE_URL: "https://a.example.com/", TRUST_PROXY: "2", LOG_LEVEL: "debug" });
+    expect(c).toMatchObject({ port: 1, publicBaseUrl: "https://a.example.com", trustProxy: 2, logLevel: "debug" });
     expect(() => loadConfig({ PUBLIC_BASE_URL: "http://a.example.com" })).toThrow();
-    expect(() => loadConfig({ PORT_ADMIN: "x" })).toThrow();
+    expect(loadConfig({ PORT: "65535" }).port).toBe(65535);
+    expect(loadConfig({ PORT: "" }).port).toBe(38787);
+    for (const bad of ["x", "0", "-1", "65536", "80.5", "1e3", "8787 "]) expect(() => loadConfig({ PORT: bad }), bad).toThrow(/PORT must be a port number/);
+    // the old two-port variables are gone: they neither fail nor change anything
+    expect(loadConfig({ PORT_PUBLIC: "1", PORT_ADMIN: "x", ADMIN_ALLOWED_HOSTS: "a.com" })).toMatchObject({ port: 38787 });
+    expect(loadConfig({})).not.toHaveProperty("portAdmin");
   });
 });
 

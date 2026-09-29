@@ -19,16 +19,16 @@ done
 # Re-running upgrades in place: the named volume keeps pairing, password and tokens.
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --restart unless-stopped \
-  -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data "$@" "$IMAGE" >/dev/null
+  -p 38787:38787 -v asmcp-data:/data "$@" "$IMAGE" >/dev/null
 
 i=0
-until curl -fsS http://localhost:8787/healthz >/dev/null 2>&1 || [ $i -ge 30 ]; do i=$((i+1)); sleep 1; done
+until curl -fsS http://localhost:38787/healthz >/dev/null 2>&1 || [ $i -ge 30 ]; do i=$((i+1)); sleep 1; done
 
 # Only the first start prints a generated password; with an existing owner (upgrade) the line is absent.
 LOGIN=$(docker logs "$NAME" 2>&1 | grep '^Admin login:' | tail -n 1 || true)
 if [ -n "$LOGIN" ]; then echo "$LOGIN"; else echo "Dùng tài khoản admin hiện có"; fi
 
-URL="http://localhost:8788/"
+URL="http://localhost:38787/account"
 if [ -n "${TUNNEL:-}" ] && [ "${TUNNEL}" != off ]; then
   PUBLIC=""
   i=0

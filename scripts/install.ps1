@@ -24,19 +24,19 @@ foreach ($v in 'TUNNEL', 'CLOUDFLARE_TUNNEL_TOKEN', 'NGROK_AUTHTOKEN', 'NGROK_DO
 # Re-running upgrades in place: the named volume keeps pairing, password and tokens.
 docker rm -f $Name *> $null
 docker run -d --name $Name --restart unless-stopped `
-  -p 8787:8787 -p 127.0.0.1:8788:8788 `
+  -p 38787:38787 `
   -v asmcp-data:/data @envArgs $Image | Out-Null
 
 Write-Host 'Dang khoi dong ...'
 for ($i = 0; $i -lt 30; $i++) {
-  try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:8787/healthz | Out-Null; break } catch { Start-Sleep -Seconds 1 }
+  try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://localhost:38787/healthz | Out-Null; break } catch { Start-Sleep -Seconds 1 }
 }
 
 # Only the first start prints a generated password; with an existing owner (upgrade) the line is absent.
 $login = docker logs $Name 2>&1 | Select-String -Pattern '^Admin login:.*' | Select-Object -Last 1
 if ($login) { Write-Host $login.Matches[0].Value } else { Write-Host 'Dung tai khoan admin hien co' }
 
-$url = 'http://localhost:8788/'
+$url = 'http://localhost:38787/account'
 if ($env:TUNNEL -and $env:TUNNEL -ne 'off') {
   $public = $null
   for ($i = 0; $i -lt 30 -and -not $public; $i++) {

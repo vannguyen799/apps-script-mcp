@@ -6,12 +6,11 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 export type TunnelConfig = { kind: "cloudflare"; token: string | undefined } | { kind: "ngrok"; authtoken: string; domain: string | undefined };
 
 export interface Config {
-  portPublic: number;
-  portAdmin: number;
+  /** DESIGN.md 13: the single HTTP port (MCP, OAuth, /account, /healthz). */
+  port: number;
   dataDir: string;
-  /** Normalised origin from PUBLIC_BASE_URL, if set (then the admin UI cannot change it). */
+  /** Normalised origin from PUBLIC_BASE_URL, if set (then /account cannot change it). */
   publicBaseUrl: string | undefined;
-  adminAllowedHosts: string[];
   logLevel: LogLevel;
   trustProxy: boolean | number | string;
   /** The shipped single-file Apps Script bundle (Code.gs) that the personalised download is made from. */
@@ -26,7 +25,7 @@ export interface Config {
 
 function port(v: string | undefined, def: number, name: string): number {
   if (v === undefined || v === "") return def;
-  const n = Number(v);
+  const n = /^\d{1,5}$/.test(v) ? Number(v) : NaN;
   if (!Number.isInteger(n) || n < 1 || n > 65535) throw new Error(`${name} must be a port number`);
   return n;
 }
@@ -75,14 +74,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (databaseUrl && !/^postgres(ql)?:\/\//i.test(databaseUrl)) throw new Error("DATABASE_URL must be a postgres:// or postgresql:// URL");
   const tunnel = loadTunnel(env, publicBaseUrl);
   return {
-    portPublic: port(env.PORT_PUBLIC, 8787, "PORT_PUBLIC"),
-    portAdmin: port(env.PORT_ADMIN, 8788, "PORT_ADMIN"),
+    port: port(env.PORT, 38787, "PORT"),
     dataDir: env.DATA_DIR && env.DATA_DIR !== "" ? env.DATA_DIR : "/data",
     publicBaseUrl,
-    adminAllowedHosts: (env.ADMIN_ALLOWED_HOSTS ?? "")
-      .split(",")
-      .map((h) => h.trim().toLowerCase())
-      .filter(Boolean),
     logLevel: level as LogLevel,
     // A built-in tunnel is a local proxy: trust X-Forwarded-For from loopback only (unless TRUST_PROXY says otherwise).
     trustProxy: tunnel && (env.TRUST_PROXY ?? "").trim() === "" ? "loopback" : parseTrustProxy(env.TRUST_PROXY),

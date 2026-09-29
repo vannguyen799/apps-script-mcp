@@ -18,21 +18,21 @@ curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/s
 Or run it yourself:
 ```bash
 docker run -d --name apps-script-mcp --restart unless-stopped \
-  -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data kortisol/apps-script-mcp
+  -p 38787:38787 -v asmcp-data:/data kortisol/apps-script-mcp
 ```
 
-- `8787`: the MCP endpoint (`/mcp`) plus OAuth. This is the only port to expose through a tunnel.
-- `8788`: the admin UI. Keep it on localhost. On first start the log prints `Admin login: admin / <random password>` once
+- `38787`: the single port. It serves the MCP endpoint (`/mcp`), OAuth and the `/account` page (`/` redirects there);
+  open `http://localhost:38787/account`. This is the port to expose through a tunnel. On first start the log prints `Admin login: admin / <random password>` once
   (`docker logs apps-script-mcp`); change it under "Đổi mật khẩu" in `/account`. Lost it: stop the container, then
   `docker run --rm -v asmcp-data:/data kortisol/apps-script-mcp node dist/cli.js reset-password`, and start it again.
 
 ### Built-in tunnel (optional)
 
-Pass environment variables and the container exposes port 8787 itself; the URL is printed as `Public URL: https://.../mcp`.
+Pass environment variables and the container exposes port 38787 itself; the URL is printed as `Public URL: https://.../mcp`.
 
 ```bash
 # ngrok with a free static domain: a stable URL (recommended)
-docker run -d --name apps-script-mcp --restart unless-stopped -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data \
+docker run -d --name apps-script-mcp --restart unless-stopped -p 38787:38787 -v asmcp-data:/data \
   -e TUNNEL=ngrok -e NGROK_AUTHTOKEN=... -e NGROK_DOMAIN=my-name.ngrok-free.app kortisol/apps-script-mcp
 ```
 

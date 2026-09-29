@@ -21,7 +21,7 @@ describe("URL parsers", () => {
     expect(parseCloudflaredUrl("2026-09-29T13:00:02Z INF Registered tunnel connection connIndex=0 location=sin01")).toBeNull();
   });
   it("ngrok: reads url from the 'started tunnel' JSON log line", () => {
-    const line = '{"addr":"http://127.0.0.1:8787","lvl":"info","msg":"started tunnel","name":"command_line","obj":"tunnels","t":"2026-09-29T13:00:01Z","url":"https://My-Name.ngrok-free.app"}';
+    const line = '{"addr":"http://127.0.0.1:38787","lvl":"info","msg":"started tunnel","name":"command_line","obj":"tunnels","t":"2026-09-29T13:00:01Z","url":"https://My-Name.ngrok-free.app"}';
     expect(parseNgrokUrl(line)).toBe("https://my-name.ngrok-free.app");
   });
   it("ngrok: ignores other lines, non-JSON and non-https urls", () => {
@@ -52,7 +52,7 @@ describe("TunnelSupervisor", () => {
     return c;
   };
   const make = (cfg: TunnelConfig, onUrl: (u: string) => void = () => {}) =>
-    new TunnelSupervisor({ spec: tunnelSpec(cfg, 8787), spawn, logger: createLogger("debug", (l) => logs.push(l)), onUrl });
+    new TunnelSupervisor({ spec: tunnelSpec(cfg, 38787), spawn, logger: createLogger("debug", (l) => logs.push(l)), onUrl });
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -63,13 +63,13 @@ describe("TunnelSupervisor", () => {
   afterEach(() => vi.useRealTimers());
 
   it("builds the documented commands and keeps tokens out of argv", () => {
-    const cf = tunnelSpec({ kind: "cloudflare", token: undefined }, 8787);
-    expect(cf.args).toEqual(["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:8787"]);
-    const named = tunnelSpec({ kind: "cloudflare", token: "cf-secret-token" }, 8787);
+    const cf = tunnelSpec({ kind: "cloudflare", token: undefined }, 38787);
+    expect(cf.args).toEqual(["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:38787"]);
+    const named = tunnelSpec({ kind: "cloudflare", token: "cf-secret-token" }, 38787);
     expect(named.args).toEqual(["tunnel", "--no-autoupdate", "run"]);
     expect(named.env).toEqual({ TUNNEL_TOKEN: "cf-secret-token" });
-    const ng = tunnelSpec({ kind: "ngrok", authtoken: "ng-secret-token", domain: "me.ngrok-free.app" }, 8787);
-    expect(ng.args).toEqual(["http", "127.0.0.1:8787", "--log", "stdout", "--log-format", "json", "--url", "https://me.ngrok-free.app"]);
+    const ng = tunnelSpec({ kind: "ngrok", authtoken: "ng-secret-token", domain: "me.ngrok-free.app" }, 38787);
+    expect(ng.args).toEqual(["http", "127.0.0.1:38787", "--log", "stdout", "--log-format", "json", "--url", "https://me.ngrok-free.app"]);
     expect(ng.env).toEqual({ NGROK_AUTHTOKEN: "ng-secret-token" });
     for (const s of [named, ng]) expect(s.args.join(" ")).not.toMatch(/secret-token/);
     expect(tunnelSpec({ kind: "ngrok", authtoken: "t", domain: undefined }, 9000).args).toEqual(["http", "127.0.0.1:9000", "--log", "stdout", "--log-format", "json"]);

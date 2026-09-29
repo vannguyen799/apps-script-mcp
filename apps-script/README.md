@@ -22,7 +22,7 @@
 
 ### Cách chính: dán `Code.gs` cá nhân hóa từ trang MCP (không phải gõ mã nào)
 
-1. Mở trang **Thêm Apps Script** trên máy chủ MCP (`/account`, hoặc trang admin của máy chủ) rồi bấm **Tải / Copy Code.gs**.
+1. Mở trang **Thêm Apps Script** trên máy chủ MCP (`/account`) rồi bấm **Tải / Copy Code.gs**.
    Tệp này là `Code.gs` đã gắn sẵn một mã cài đặt dùng một lần (khối `ASMCP_SETUP_`), hết hạn sau 30 phút.
 2. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính, rồi mở <https://script.new>.
 3. Chọn toàn bộ nội dung `Code.gs` trong trình soạn thảo (Ctrl+A), dán **đè** tệp vừa copy. Bấm Lưu.
@@ -95,7 +95,7 @@ Mở URL ứng dụng web ở trên trong trình duyệt **khi đang đăng nh�
 
 ### 4. Ghép nối với máy chủ MCP
 
-1. Mở trang quản trị của máy chủ Docker (`http://127.0.0.1:8788`).
+1. Mở trang `/account` của máy chủ Docker (`http://localhost:38787/account`).
 2. Dán URL ứng dụng web vào ô Apps Script URL và nhấn **Pair**. Máy chủ hiển thị mã ghép nối dạng `XXXX-XXXX` (hiệu lực 10 phút).
 3. Ở trang quản trị Apps Script, nhập mã vào mục **Nhập mã ghép nối** rồi nhấn **Xác nhận mã**.
 4. Trong vài giây máy chủ Docker sẽ tự xác nhận và chuyển sang trạng thái `connected`. Trang Apps Script hiển thị **Đã ghép nối**.
@@ -121,11 +121,11 @@ Gmail, Lịch..., có thể bật action `script.eval` (tool `run_apps_script` p
 
 1. Mở trang quản trị Apps Script (URL web app, đăng nhập bằng tài khoản chủ sở hữu).
 2. Ở mục **Chạy Apps Script (nâng cao)**, đọc cảnh báo rồi bấm **Bật chạy script**. Chỉ chủ sở hữu bật/tắt được; máy chủ MCP và người ẩn danh thì không.
-3. Tạo token có scope `script.eval` (PAT: tick ô `script.eval` trong trang admin của máy chủ). Xem [README gốc](../README.md#chạy-apps-script-tùy-chọn-rủi-ro-cao).
+3. Tạo token có scope `script.eval` (PAT: tick ô `script.eval` trong `/account` của máy chủ). Xem [README gốc](../README.md#chạy-apps-script-tùy-chọn-rủi-ro-cao).
 4. Muốn tắt: bấm lại nút ở mục trên. Có hiệu lực ngay.
 
 Trang quản trị cũng hiện 50 lần chạy gần nhất (thời gian, mã băm SHA-256 của mã, kết quả, thời lượng). Nhật ký **không** lưu mã, tham số
-hay kết quả; ai cần biết mã nào đã chạy thì đối chiếu mã băm. `ping` báo `evalEnabled` để trang admin của máy chủ hiển thị "Chạy script: bật/tắt".
+hay kết quả; ai cần biết mã nào đã chạy thì đối chiếu mã băm. `ping` báo `evalEnabled` để `/account` hiển thị "Chạy script: bật/tắt".
 
 ### Scope trong appsscript.json mới là ranh giới thật sự
 
