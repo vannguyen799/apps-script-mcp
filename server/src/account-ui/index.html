@@ -62,21 +62,6 @@ ol{padding-left:20px;margin:6px 0}
       <input id="login-pw" type="password" autocomplete="current-password" required>
       <div class="row"><button class="primary" type="submit">Đăng nhập</button></div>
     </form>
-    <p class="muted">Chưa có tài khoản? Nhờ chủ máy chủ gửi cho bạn một đường dẫn mời.</p>
-  </section>
-
-  <section id="view-invite" class="card narrow hidden">
-    <h2>Tạo tài khoản từ lời mời</h2>
-    <form id="form-invite">
-      <label for="inv-user">Tên đăng nhập</label>
-      <input id="inv-user" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" pattern="[a-z0-9._-]{3,32}" required>
-      <p class="muted">3-32 ký tự: chữ thường, số, dấu chấm, gạch dưới, gạch ngang.</p>
-      <label for="inv-pw">Mật khẩu (tối thiểu 10 ký tự)</label>
-      <input id="inv-pw" type="password" autocomplete="new-password" minlength="10" required>
-      <label for="inv-pw2">Nhập lại mật khẩu</label>
-      <input id="inv-pw2" type="password" autocomplete="new-password" minlength="10" required>
-      <div class="row"><button class="primary" type="submit">Tạo tài khoản</button></div>
-    </form>
   </section>
 
   <div id="view-dash" class="hidden">
@@ -150,6 +135,12 @@ ol{padding-left:20px;margin:6px 0}
     </section>
 
     <section class="card">
+      <h2>Lượt dùng 30 ngày</h2>
+      <p class="muted">Số lần gọi tool mỗi ngày (giờ UTC), theo từng tool. Chỉ đếm số lượt và số lỗi, không ghi dữ liệu bảng tính, câu tìm kiếm hay mã.</p>
+      <table><thead><tr><th>Ngày</th><th>Tool</th><th>Lượt</th><th>Lỗi</th></tr></thead><tbody id="usage-list"></tbody></table>
+    </section>
+
+    <section class="card">
       <h2>Kết nối Claude</h2>
       <p><strong>claude.ai (custom connector):</strong> Settings &rarr; Connectors &rarr; Add custom connector, dán URL:</p>
       <div class="mono" id="help-url"></div>
@@ -171,7 +162,6 @@ var addLeftTimer = null;
 var addExpires = 0;
 var params = new URLSearchParams(location.search);
 var consentNonce = params.get("consent") || "";
-var inviteToken = "";
 
 function show(id, on) { $(id).classList.toggle("hidden", !on); }
 function fmt(ts) { return ts ? new Date(ts).toLocaleString("vi-VN") : "-"; }
@@ -201,12 +191,9 @@ function copyText(text, b) {
 function route() {
   return api("GET", "/account/api/session").then(function (s) {
     csrf = s.csrfToken; me = s.authenticated ? s : null;
-    var onInvite = location.pathname.replace(/\/+$/, "") === "/account/invite";
-    show("view-invite", onInvite && !s.authenticated);
-    show("view-login", !onInvite && !s.authenticated);
-    show("view-dash", s.authenticated && !onInvite);
+    show("view-login", !s.authenticated);
+    show("view-dash", s.authenticated);
     show("hdr-actions", s.authenticated);
-    if (s.authenticated && onInvite) { history.replaceState(null, "", "/account"); return route(); }
     if (s.authenticated) {
       $("who").textContent = s.username;
       show("opt-new", !!s.setupAvailable);
@@ -219,7 +206,7 @@ function route() {
 }
 
 function loadDash() {
-  return Promise.all([refreshConns(), refreshPats()]).then(function () {
+  return Promise.all([refreshConns(), refreshPats(), refreshUsage()]).then(function () {
     if (params.get("add") === "1" && !pendingId) { params.delete("add"); startAdd(); }
   });
 }
@@ -322,19 +309,24 @@ function refreshPats() {
   });
 }
 
+/* ---------- usage ---------- */
+function refreshUsage() {
+  return api("GET", "/account/api/usage").then(function (r) {
+    var tb = $("usage-list"); clear(tb);
+    if (!r.usage.length) { var tr0 = document.createElement("tr"); var c0 = td("Chưa có lượt gọi nào."); c0.colSpan = 4; tr0.appendChild(c0); tb.appendChild(tr0); }
+    r.usage.forEach(function (u) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(u.day)); tr.appendChild(td(u.tool)); tr.appendChild(td(String(u.calls))); tr.appendChild(td(String(u.errors)));
+      tb.appendChild(tr);
+    });
+  });
+}
+
 /* ---------- events ---------- */
 $("form-login").addEventListener("submit", function (ev) {
   ev.preventDefault(); notice("");
   api("POST", "/account/login", { username: $("login-user").value, password: $("login-pw").value })
     .then(function () { $("login-pw").value = ""; return route(); })
-    .catch(function (e) { notice(e.message); });
-});
-
-$("form-invite").addEventListener("submit", function (ev) {
-  ev.preventDefault(); notice("");
-  if ($("inv-pw").value !== $("inv-pw2").value) { notice("Mật khẩu nhập lại không khớp."); return; }
-  api("POST", "/account/invite/accept", { token: inviteToken, username: $("inv-user").value, password: $("inv-pw").value })
-    .then(function () { $("inv-pw").value = ""; $("inv-pw2").value = ""; inviteToken = ""; history.replaceState(null, "", "/account"); return route(); })
     .catch(function (e) { notice(e.message); });
 });
 
@@ -373,11 +365,6 @@ $("form-pat").addEventListener("submit", function (ev) {
 });
 $("btn-copy-pat").addEventListener("click", function () { copyText($("pat-token").textContent, $("btn-copy-pat")); });
 
-// The invite token lives in the fragment (kept out of server logs); read it once and drop it from the address bar.
-(function () {
-  var m = /^#([A-Za-z0-9_-]{20,128})$/.exec(location.hash);
-  if (m && location.pathname.replace(/\/+$/, "") === "/account/invite") { inviteToken = m[1]; history.replaceState(null, "", location.pathname); }
-})();
 route();
 </script>
 </body>

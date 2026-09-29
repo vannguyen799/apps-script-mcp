@@ -13,6 +13,11 @@ export interface Config {
   trustProxy: boolean | number | string;
   /** The shipped single-file Apps Script bundle (Code.gs) that the personalised download is made from. */
   appsScriptBundlePath: string;
+  /** DESIGN.md 10.1: a postgres:// URL selects PostgreSQL (TLS via its sslmode); unset keeps the local file in dataDir. */
+  databaseUrl: string | undefined;
+  /** DESIGN.md 10.3: owner bootstrap. The password is only used when no owner exists yet. */
+  adminUsername: string;
+  adminPassword: string | undefined;
 }
 
 function port(v: string | undefined, def: number, name: string): number {
@@ -41,6 +46,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const level = (env.LOG_LEVEL ?? "info").toLowerCase();
   if (!["debug", "info", "warn", "error"].includes(level)) throw new Error("LOG_LEVEL must be debug|info|warn|error");
+  const databaseUrl = env.DATABASE_URL?.trim();
+  if (databaseUrl && !/^postgres(ql)?:\/\//i.test(databaseUrl)) throw new Error("DATABASE_URL must be a postgres:// or postgresql:// URL");
   return {
     portPublic: port(env.PORT_PUBLIC, 8787, "PORT_PUBLIC"),
     portAdmin: port(env.PORT_ADMIN, 8788, "PORT_ADMIN"),
@@ -53,5 +60,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: level as LogLevel,
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     appsScriptBundlePath: env.APPS_SCRIPT_BUNDLE_PATH && env.APPS_SCRIPT_BUNDLE_PATH.trim() !== "" ? env.APPS_SCRIPT_BUNDLE_PATH.trim() : "/app/apps-script/Code.gs",
+    databaseUrl: databaseUrl ? databaseUrl : undefined,
+    adminUsername: env.ADMIN_USERNAME && env.ADMIN_USERNAME.trim() !== "" ? env.ADMIN_USERNAME.trim() : "admin",
+    adminPassword: env.ADMIN_PASSWORD !== undefined && env.ADMIN_PASSWORD !== "" ? env.ADMIN_PASSWORD : undefined,
   };
 }

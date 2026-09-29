@@ -115,28 +115,25 @@ describe("admin API security", () => {
 
   it("unauthenticated API calls are 401", async () => {
     expect((await call("GET", "/api/status")).status).toBe(401);
-    for (const p of ["/api/users", "/api/invites", "/api/connections", "/api/pats", "/api/grants"]) expect((await call("GET", p)).status, p).toBe(401);
-    expect((await call("POST", "/api/invites", { body: {} })).status).toBe(401);
+    for (const p of ["/api/usage", "/api/connections", "/api/pats", "/api/grants"]) expect((await call("GET", p)).status, p).toBe(401);
+    expect((await call("POST", "/api/pending", { body: {} })).status).toBe(401);
   });
 
   it("CSRF: state-changing calls need X-CSRF-Token equal to the session's", async () => {
-    expect((await call("POST", "/api/invites", { cookie, body: {} })).json.error.code).toBe("BAD_CSRF");
-    expect((await call("POST", "/api/invites", { cookie, body: {}, csrf: "wrong" })).status).toBe(403);
-    const ok = await call("POST", "/api/invites", { cookie, body: {}, csrf });
+    expect((await call("POST", "/api/pending", { cookie, body: {} })).json.error.code).toBe("BAD_CSRF");
+    expect((await call("POST", "/api/pending", { cookie, body: {}, csrf: "wrong" })).status).toBe(403);
+    const ok = await call("POST", "/api/pending", { cookie, body: {}, csrf });
     expect(ok.status).toBe(201);
-    expect(ok.json.link).toMatch(new RegExp(`^${h.publicUrl}/account/invite#[A-Za-z0-9_-]{43}$`));
     // GET does not need it
-    const list = await call("GET", "/api/invites", { cookie });
-    expect(list.json.invites).toHaveLength(1);
-    expect(JSON.stringify(list.json)).not.toContain("#"); // the token is only ever in the creation response
+    const id = ok.json.pending.id as string;
+    expect((await call("GET", `/api/pending/${id}`, { cookie })).status).toBe(200);
     // DELETE does
-    const id = list.json.invites[0].id as string;
-    expect((await call("DELETE", `/api/invites/${id}`, { cookie, body: {} })).status).toBe(403);
-    expect((await call("DELETE", `/api/invites/${id}`, { cookie, body: {}, csrf })).status).toBe(200);
+    expect((await call("DELETE", `/api/pending/${id}`, { cookie, body: {} })).status).toBe(403);
+    expect((await call("DELETE", `/api/pending/${id}`, { cookie, body: {}, csrf })).status).toBe(200);
   });
 
   it("requires Content-Type: application/json on POST", async () => {
-    const r = await call("POST", "/api/invites", { cookie, csrf, contentType: "text/plain", body: "{}" });
+    const r = await call("POST", "/api/pending", { cookie, csrf, contentType: "text/plain", body: "{}" });
     expect(r.status).toBe(415);
     const nobody = await call("POST", "/api/login", { contentType: "application/x-www-form-urlencoded", body: "password=x" });
     expect(nobody.status).toBe(415);
@@ -144,9 +141,9 @@ describe("admin API security", () => {
 
   it("Origin, when present on POST, must match Host", async () => {
     const u = new URL(h.adminUrl);
-    expect((await call("POST", "/api/invites", { cookie, csrf, body: {}, origin: "https://evil.example" })).status).toBe(403);
-    expect((await call("POST", "/api/invites", { cookie, csrf, body: {}, origin: "null" })).status).toBe(403);
-    expect((await call("POST", "/api/invites", { cookie, csrf, body: {}, origin: `http://${u.host}` })).status).toBe(201);
+    expect((await call("POST", "/api/pending", { cookie, csrf, body: {}, origin: "https://evil.example" })).status).toBe(403);
+    expect((await call("POST", "/api/pending", { cookie, csrf, body: {}, origin: "null" })).status).toBe(403);
+    expect((await call("POST", "/api/pending", { cookie, csrf, body: {}, origin: `http://${u.host}` })).status).toBe(201);
   });
 
   it("logout destroys the session", async () => {
@@ -189,31 +186,6 @@ describe("admin API security", () => {
     expect(html).toContain("Thêm Apps Script");
     expect(html).not.toContain("Tạo mã pairing");
     expect(html).not.toContain("btn-unpair");
-  });
-
-  it("a member cannot log in to the admin UI, with the same generic error as a wrong password", async () => {
-    const m = await h.addMember("mary", "mary-password-1");
-    const asMember = await call("POST", "/api/login", { body: { username: "mary", password: "mary-password-1" } });
-    const wrong = await call("POST", "/api/login", { body: { username: "mary", password: "wrong-password" } });
-    expect(asMember.status).toBe(401);
-    expect(asMember.json.error.code).toBe(wrong.json.error.code);
-    expect(asMember.json.error.message).toBe(wrong.json.error.message);
-    expect(m.id).toBeTruthy();
-  });
-
-  it("users and invites: create, list, delete; deleting a member removes their connections, PATs and grants", async () => {
-    const m = await h.addMember("mary", "mary-password-1");
-    const cid = await h.addConnection(m.id, "Mary script");
-    await h.pats.create(m.id, cid, "mary pat", ["sheets.read"]);
-    const users = await call("GET", "/api/users", { cookie });
-    expect(users.json.users.map((u: any) => [u.username, u.role, u.connections])).toEqual([["admin", "owner", 1], ["mary", "member", 1]]);
-    expect(JSON.stringify(users.json)).not.toContain("passwordHash");
-    expect((await call("DELETE", `/api/users/${h.ownerId}`, { cookie, csrf, body: {} })).status).toBe(403); // the owner cannot be deleted
-    expect((await call("DELETE", `/api/users/${m.id}`, { cookie, csrf, body: {} })).status).toBe(200);
-    expect(h.registry.get(cid)).toBeUndefined();
-    expect(h.pats.list()).toHaveLength(0);
-    expect(h.accounts.findByUsername("mary")).toBeUndefined();
-    expect((await call("DELETE", `/api/users/${m.id}`, { cookie, csrf, body: {} })).status).toBe(404);
   });
 
   it("the owner sees and removes every connection, PAT and grant", async () => {

@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { chmod, copyFile, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import path from "node:path";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
+import type { StateBackend } from "./backend.js";
+import { LocalStateBackend } from "./local-backend.js";
 
 export const STATE_VERSION = 2;
 
-export type UserRole = "owner" | "member";
+/** The product has a single account, the owner (older files may still hold members; they are dropped on load). */
+export type UserRole = "owner";
 
 export interface StoredUser {
   id: string;
@@ -17,14 +18,6 @@ export interface StoredUser {
   createdAt: number;
   /** Connection last approved on the OAuth consent page; preselected next time. */
   lastConnectionId?: string | null;
-}
-
-/** Keyed by SHA-256 hex of the invite token; the token itself is never stored. */
-export interface StoredInvite {
-  id: string;
-  createdBy: string;
-  createdAt: number;
-  expiresAt: number;
 }
 
 /** Keyed by SHA-256 hex of the cookie value. */
@@ -115,13 +108,15 @@ export interface StoredPat {
   hint: string;
 }
 
+/** Tool calls per UTC day and tool (DESIGN.md 10.2): `usage[day][tool]`. Kept for 30 days. */
+export type UsageState = Record<string, Record<string, { calls: number; errors: number }>>;
+
 export interface PersistedState {
   version: 2;
   instanceId: string;
   admin: { setupTokenHash: string | null };
   publicBaseUrl: string | null;
   users: Record<string, StoredUser>;
-  invites: Record<string, StoredInvite>;
   sessions: Record<string, StoredSession>;
   connections: Record<string, StoredConnection>;
   pendingConnections: Record<string, PendingConnection>;
@@ -134,6 +129,7 @@ export interface PersistedState {
   };
   /** keyed by SHA-256 hex of the token */
   pats: Record<string, StoredPat>;
+  usage: UsageState;
 }
 
 export function emptyState(): PersistedState {
@@ -143,12 +139,12 @@ export function emptyState(): PersistedState {
     admin: { setupTokenHash: null },
     publicBaseUrl: null,
     users: {},
-    invites: {},
     sessions: {},
     connections: {},
     pendingConnections: {},
     oauth: { clients: {}, grants: {}, accessTokens: {}, refreshTokens: {} },
     pats: {},
+    usage: {},
   };
 }
 
@@ -220,20 +216,40 @@ function normalizeV2(parsed: Obj): PersistedState {
   const base = emptyState();
   const oauth = isObj(parsed.oauth) ? parsed.oauth : {};
   const admin = isObj(parsed.admin) ? parsed.admin : {};
-  return {
+  const out: PersistedState = {
     ...base,
     ...(parsed as Partial<PersistedState>),
     version: 2,
     instanceId: typeof parsed.instanceId === "string" ? parsed.instanceId : base.instanceId,
     admin: { setupTokenHash: typeof admin.setupTokenHash === "string" ? admin.setupTokenHash : null },
     users: (parsed.users ?? {}) as PersistedState["users"],
-    invites: (parsed.invites ?? {}) as PersistedState["invites"],
     sessions: (parsed.sessions ?? {}) as PersistedState["sessions"],
     connections: (parsed.connections ?? {}) as PersistedState["connections"],
     pendingConnections: (parsed.pendingConnections ?? {}) as PersistedState["pendingConnections"],
     oauth: { ...base.oauth, ...(oauth as Partial<PersistedState["oauth"]>) },
     pats: (parsed.pats ?? {}) as PersistedState["pats"],
+    usage: (isObj(parsed.usage) ? parsed.usage : {}) as UsageState,
   };
+  delete (out as { invites?: unknown }).invites; // invites no longer exist
+  return out;
+}
+
+/**
+ * Single-owner product: removes every user that is not the owner, with everything of theirs (sessions, connections, pending
+ * connections, grants, tokens and PATs). Returns how many users were removed.
+ */
+export function pruneToOwner(s: PersistedState): number {
+  const gone = new Set(Object.values(s.users).filter((u) => (u.role as string) !== "owner").map((u) => u.id));
+  if (gone.size === 0) return 0;
+  for (const id of gone) delete s.users[id];
+  for (const [h, v] of Object.entries(s.sessions)) if (gone.has(v.userId)) delete s.sessions[h];
+  for (const [id, c] of Object.entries(s.connections)) if (gone.has(c.userId)) delete s.connections[id];
+  for (const [id, p] of Object.entries(s.pendingConnections)) if (gone.has(p.userId)) delete s.pendingConnections[id];
+  for (const [id, g] of Object.entries(s.oauth.grants)) if (gone.has(g.userId)) delete s.oauth.grants[id];
+  for (const [h, a] of Object.entries(s.oauth.accessTokens)) if (gone.has(a.userId)) delete s.oauth.accessTokens[h];
+  for (const [h, r] of Object.entries(s.oauth.refreshTokens)) if (gone.has(r.userId)) delete s.oauth.refreshTokens[h];
+  for (const [h, p] of Object.entries(s.pats)) if (gone.has(p.userId)) delete s.pats[h];
+  return gone.size;
 }
 
 export function upgradeState(parsed: unknown, now: number = Date.now()): { state: PersistedState; migrated: boolean } {
@@ -244,54 +260,61 @@ export function upgradeState(parsed: unknown, now: number = Date.now()): { state
   throw new Error(`state.json has version ${String(v)}, which this server does not understand`);
 }
 
+export interface StateStoreOptions {
+  /** Read once when the primary backend is empty (first start on PostgreSQL): the old DATA_DIR/state.json. Never written. */
+  importFrom?: StateBackend;
+}
+
 /**
- * JSON-file state with atomic (tmp + rename) writes at mode 0600.
- * `update` mutates the in-memory state synchronously, then queues a serialized write.
+ * The state document in memory plus a serialized write-through to a StateBackend (DESIGN.md 10.1). `new StateStore(dir)` keeps
+ * the local atomic JSON file (mode 0600). `update` mutates the in-memory state synchronously, then queues the write.
  */
 export class StateStore {
   private data: PersistedState = emptyState();
   private chain: Promise<void> = Promise.resolve();
-  private readonly file: string;
+  private readonly backend: StateBackend;
 
   constructor(
-    dir: string,
+    target: string | StateBackend,
     private readonly log: Logger = nullLogger,
+    private readonly opts: StateStoreOptions = {},
   ) {
-    this.file = path.join(dir, "state.json");
+    this.backend = typeof target === "string" ? new LocalStateBackend(target) : target;
   }
 
   get state(): PersistedState {
     return this.data;
   }
 
+  /** Path of state.json for the local backend, "" otherwise. */
   get filePath(): string {
-    return this.file;
+    return this.backend instanceof LocalStateBackend ? this.backend.filePath : "";
   }
 
   async load(): Promise<void> {
-    await mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
-    let raw: string | undefined;
-    try {
-      raw = await readFile(this.file, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    let raw = await this.backend.load();
+    let imported = false;
+    if (raw === null && this.opts.importFrom) {
+      raw = await this.opts.importFrom.load();
+      imported = raw !== null;
     }
-    if (raw === undefined) {
+    if (raw === null) {
       this.data = emptyState();
       await this.flush();
       return;
     }
-    // A corrupt file is a hard error: silently resetting would drop credentials.
-    const { state, migrated } = upgradeState(JSON.parse(raw));
+    const { state, migrated } = upgradeState(raw);
+    const hadInvites = isObj(raw) && raw.invites !== undefined;
+    const removed = pruneToOwner(state);
     this.data = state;
-    if (migrated) {
+    if (migrated && !imported) {
       // Keep the untouched v1 file next to the new one; the migration is one-way.
-      const backup = `${this.file}.v1.bak`;
-      await copyFile(this.file, backup);
-      await chmod(backup, 0o600);
-      await this.flush();
+      await this.backend.backupOriginal?.(".v1.bak");
       this.log.info("state_migrated", { from: 1, to: STATE_VERSION });
     }
+    if (imported) this.log.info("state_imported_from_file", { migrated });
+    if (removed > 0) this.log.info("users_pruned", { count: removed });
+    if (imported || migrated || removed > 0 || hadInvites) await this.flush();
   }
 
   async update(mutator: (s: PersistedState) => void): Promise<void> {
@@ -300,29 +323,16 @@ export class StateStore {
   }
 
   flush(): Promise<void> {
-    const run = this.chain.then(() => this.writeOnce());
+    const run = this.chain.then(() => this.backend.save(this.data));
     this.chain = run.catch((e) => {
       this.log.error("state_write_failed", { reason: e instanceof Error ? e.name : "unknown" });
     });
     return run;
   }
 
-  private async writeOnce(): Promise<void> {
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    const json = JSON.stringify(this.data);
-    const fh = await open(tmp, "w", 0o600);
-    try {
-      await fh.writeFile(json, "utf8");
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    try {
-      await chmod(tmp, 0o600);
-      await rename(tmp, this.file);
-    } catch (e) {
-      await unlink(tmp).catch(() => {});
-      throw e;
-    }
+  /** Flushes the last write and releases the backend (database connections). */
+  async close(): Promise<void> {
+    await this.flush().catch(() => {});
+    await this.backend.close();
   }
 }

@@ -230,7 +230,7 @@ describe("run_apps_script tool", () => {
       warn: (event, fields) => lines.push({ level: "warn", event, fields }),
       error: (event, fields) => lines.push({ level: "error", event, fields }),
     };
-    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, ipLimiter: h.ipLimiter, evaluatorAvailable: true, trustProxy: false, logger });
+    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, usage: h.usage, ipLimiter: h.ipLimiter, evaluatorAvailable: true, trustProxy: false, logger });
     const srv = app.listen(0, "127.0.0.1");
     await new Promise((r) => srv.once("listening", r));
     const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;

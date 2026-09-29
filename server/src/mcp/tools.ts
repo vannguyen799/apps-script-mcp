@@ -8,6 +8,7 @@ import type { ConnectionRuntime, ResolveConnection } from "../connection/connect
 import { CONNECTION_REMOVED_MESSAGE } from "../connection/connection-registry.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
+import type { UsageRecorder } from "../usage/usage-service.js";
 
 const cell = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 const grid = z.array(z.array(cell)).min(1);
@@ -33,6 +34,8 @@ export interface ToolDeps {
   resolve: ResolveConnection;
   /** Opt-in: run_apps_script is registered only when the backend can evaluate (DESIGN.md section 8.2). */
   evaluatorAvailable?: boolean;
+  /** DESIGN.md 10.2: counts calls and errors per day and tool. Failures inside it never reach the tool call. */
+  usage?: UsageRecorder;
   logger?: Logger;
 }
 
@@ -67,27 +70,40 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   const guarded =
     <A>(tool: string, scope: string, fn: (args: A, rt: ConnectionRuntime) => Promise<unknown>) =>
     async (args: A, extra: ToolExtra): Promise<CallToolResult> => {
+      // Recorded after the call, whatever the outcome; only the tool name and whether it failed.
+      const finish = (ok: boolean): void => {
+        try {
+          deps.usage?.record(tool, ok);
+        } catch {
+          /* never break the call */
+        }
+      };
       if (!extra.authInfo?.scopes.includes(scope)) {
         log.warn("tool_denied", { tool, resultCode: "INSUFFICIENT_SCOPE" });
+        finish(false);
         return fail(`INSUFFICIENT_SCOPE: the tool "${tool}" requires the "${scope}" scope, which this token does not have. Ask the owner to reconnect or issue a token with that scope.`);
       }
       const userId = extra.authInfo.extra?.userId;
       const connectionId = extra.authInfo.extra?.connectionId;
       if (typeof userId !== "string" || typeof connectionId !== "string" || userId === "" || connectionId === "") {
         log.warn("tool_denied", { tool, resultCode: "NO_CONNECTION" });
+        finish(false);
         return fail(`CONNECTION_REMOVED: ${CONNECTION_REMOVED_MESSAGE}`);
       }
       const rt = deps.resolve(connectionId, userId);
       if (!rt) {
         log.info("tool_call", { tool, resultCode: "CONNECTION_REMOVED" });
+        finish(false);
         return fail(`CONNECTION_REMOVED: ${CONNECTION_REMOVED_MESSAGE}`);
       }
       const t0 = Date.now();
       try {
         const r = await fn(args, rt);
         log.info("tool_call", { tool, durationMs: Date.now() - t0, resultCode: "OK" });
+        finish(true);
         return ok(r);
       } catch (e) {
+        finish(false);
         if (e instanceof GatewayError) {
           log.info("tool_call", { tool, durationMs: Date.now() - t0, resultCode: e.code });
           return fail(gatewayErrorText(e));

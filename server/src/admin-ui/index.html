@@ -95,24 +95,10 @@ select{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;fo
     </section>
 
     <section class="card">
-      <h2>Người dùng &amp; lời mời</h2>
-      <table><thead><tr><th>Tên đăng nhập</th><th>Vai trò</th><th>Kết nối</th><th>Tạo lúc</th><th></th></tr></thead><tbody id="user-list"></tbody></table>
-      <h3 style="font-size:15px;margin:16px 0 4px">Lời mời</h3>
-      <p class="muted">Lời mời có hiệu lực 7 ngày và chỉ dùng được một lần. Token nằm sau dấu <code>#</code> của đường dẫn nên không xuất hiện trong log.</p>
-      <div class="row"><button id="btn-invite" class="primary" type="button">Tạo lời mời</button></div>
-      <div id="invite-once" class="once hidden">
-        <strong>Gửi đường dẫn này cho người được mời - sẽ không hiển thị lại.</strong>
-        <div class="mono" id="invite-link"></div>
-        <div class="row"><button id="btn-copy-invite" type="button">Copy</button></div>
-      </div>
-      <table><thead><tr><th>Tạo bởi</th><th>Tạo lúc</th><th>Hết hạn</th><th></th></tr></thead><tbody id="invite-list"></tbody></table>
-    </section>
-
-    <section class="card">
-      <h2>Kết nối Apps Script (tất cả người dùng)</h2>
+      <h2>Kết nối Apps Script</h2>
       <div id="conn-empty" class="muted hidden">Chưa có kết nối nào.</div>
-      <table id="conn-table" class="hidden"><thead><tr><th>Chủ</th><th>Nhãn</th><th>Tài khoản Google</th><th>Trạng thái</th><th>Chạy script</th><th></th></tr></thead><tbody id="conn-list"></tbody></table>
-      <div class="row"><button id="btn-add" class="primary" type="button">Thêm Apps Script (cho tài khoản chủ sở hữu)</button></div>
+      <table id="conn-table" class="hidden"><thead><tr><th>Nhãn</th><th>Tài khoản Google</th><th>Trạng thái</th><th>Chạy script</th><th></th></tr></thead><tbody id="conn-list"></tbody></table>
+      <div class="row"><button id="btn-add" class="primary" type="button">Thêm Apps Script</button></div>
     </section>
 
     <section id="add-card" class="card hidden">
@@ -154,14 +140,20 @@ select{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;fo
 
 
     <section class="card">
-      <h2>Personal Access Tokens (tất cả người dùng)</h2>
+      <h2>Personal Access Tokens</h2>
       <p class="muted">Tạo PAT ở trang tài khoản (<span id="pat-hint">/account</span>). Ở đây chỉ xem và thu hồi.</p>
-      <table><thead><tr><th>Nhãn</th><th>Người dùng</th><th>Kết nối</th><th>Quyền</th><th>Dùng gần nhất</th><th></th></tr></thead><tbody id="pat-list"></tbody></table>
+      <table><thead><tr><th>Nhãn</th><th>Kết nối</th><th>Quyền</th><th>Dùng gần nhất</th><th></th></tr></thead><tbody id="pat-list"></tbody></table>
     </section>
 
     <section class="card">
       <h2>Kết nối OAuth (claude.ai...)</h2>
-      <table><thead><tr><th>Ứng dụng</th><th>Người dùng</th><th>Kết nối</th><th>Quyền</th><th>Tạo lúc</th><th></th></tr></thead><tbody id="grant-list"></tbody></table>
+      <table><thead><tr><th>Ứng dụng</th><th>Kết nối</th><th>Quyền</th><th>Tạo lúc</th><th></th></tr></thead><tbody id="grant-list"></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Lượt dùng 30 ngày</h2>
+      <p class="muted">Số lần gọi tool mỗi ngày (giờ UTC), theo từng tool. Chỉ đếm số lượt và số lỗi, không ghi dữ liệu bảng tính, câu tìm kiếm hay mã.</p>
+      <table><thead><tr><th>Ngày</th><th>Tool</th><th>Lượt</th><th>Lỗi</th></tr></thead><tbody id="usage-list"></tbody></table>
     </section>
   </div>
 </main>
@@ -218,7 +210,7 @@ function route() {
 }
 
 function loadDash() {
-  return Promise.all([refreshStatus(), refreshUsers(), refreshInvites(), refreshConns(), refreshPats(), refreshGrants()]).then(function () {
+  return Promise.all([refreshStatus(), refreshConns(), refreshPats(), refreshGrants(), refreshUsage()]).then(function () {
     refreshTimer = setInterval(function () { if (!document.hidden) refreshConns().catch(fail); }, 10000);
   });
 }
@@ -237,35 +229,6 @@ function renderStatus(st) {
 }
 function refreshStatus() { return api("GET", "/status").then(renderStatus); }
 
-/* ---------- users / invites ---------- */
-function refreshUsers() {
-  return api("GET", "/users").then(function (r) {
-    var tb = $("user-list"); clear(tb);
-    r.users.forEach(function (u) {
-      var tr = document.createElement("tr");
-      tr.appendChild(td(u.username)); tr.appendChild(td(u.role === "owner" ? "chủ sở hữu" : "thành viên")); tr.appendChild(td(String(u.connections))); tr.appendChild(td(fmt(u.createdAt)));
-      var act = document.createElement("td");
-      if (u.role !== "owner") act.appendChild(btn("Xóa", "danger", function () {
-        if (confirm("Xóa người dùng " + u.username + " cùng kết nối, token và PAT của họ?")) api("DELETE", "/users/" + encodeURIComponent(u.id)).then(function () { return Promise.all([refreshUsers(), refreshConns(), refreshPats(), refreshGrants()]); }).catch(fail);
-      }));
-      tr.appendChild(act); tb.appendChild(tr);
-    });
-  });
-}
-function refreshInvites() {
-  return api("GET", "/invites").then(function (r) {
-    var tb = $("invite-list"); clear(tb);
-    if (!r.invites.length) emptyRow(tb, 4, "Không có lời mời nào đang chờ.");
-    r.invites.forEach(function (i) {
-      var tr = document.createElement("tr");
-      tr.appendChild(td(i.createdBy)); tr.appendChild(td(fmt(i.createdAt))); tr.appendChild(td(fmt(i.expiresAt)));
-      var act = document.createElement("td");
-      act.appendChild(btn("Xóa", "danger", function () { api("DELETE", "/invites/" + encodeURIComponent(i.id)).then(refreshInvites).catch(fail); }));
-      tr.appendChild(act); tb.appendChild(tr);
-    });
-  });
-}
-
 /* ---------- connections ---------- */
 function refreshConns() {
   return api("GET", "/connections").then(function (r) {
@@ -273,7 +236,7 @@ function refreshConns() {
     show("conn-empty", !r.connections.length); show("conn-table", !!r.connections.length);
     r.connections.forEach(function (c) {
       var tr = document.createElement("tr");
-      tr.appendChild(td(c.ownerUsername || "?")); tr.appendChild(td(c.label)); tr.appendChild(td(c.account));
+      tr.appendChild(td(c.label)); tr.appendChild(td(c.account));
       var st = document.createElement("td"); var b = document.createElement("span"); b.className = "badge b-" + c.state; b.textContent = c.state === "connected" ? "Hoạt động" : "Lỗi"; st.appendChild(b);
       if (c.message) { var m = document.createElement("div"); m.className = "muted"; m.textContent = c.message; st.appendChild(m); }
       tr.appendChild(st);
@@ -338,10 +301,10 @@ function fetchBundle() { return api("GET", "/pending/" + encodeURIComponent(pend
 function refreshPats() {
   return api("GET", "/pats").then(function (r) {
     var tb = $("pat-list"); clear(tb);
-    if (!r.pats.length) emptyRow(tb, 6, "Chưa có PAT nào.");
+    if (!r.pats.length) emptyRow(tb, 5, "Chưa có PAT nào.");
     r.pats.forEach(function (p) {
       var tr = document.createElement("tr");
-      tr.appendChild(td(p.label + " (" + p.hint + "…)")); tr.appendChild(td(p.username || "?")); tr.appendChild(td(p.connectionLabel || "(đã xóa)")); tr.appendChild(td(p.scopes.join(", "))); tr.appendChild(td(fmt(p.lastUsedAt)));
+      tr.appendChild(td(p.label + " (" + p.hint + "…)")); tr.appendChild(td(p.connectionLabel || "(đã xóa)")); tr.appendChild(td(p.scopes.join(", "))); tr.appendChild(td(fmt(p.lastUsedAt)));
       var act = document.createElement("td");
       act.appendChild(btn("Thu hồi", "danger", function () { if (confirm("Thu hồi token này?")) api("DELETE", "/pats/" + encodeURIComponent(p.id)).then(refreshPats).catch(fail); }));
       tr.appendChild(act); tb.appendChild(tr);
@@ -351,13 +314,26 @@ function refreshPats() {
 function refreshGrants() {
   return api("GET", "/grants").then(function (r) {
     var tb = $("grant-list"); clear(tb);
-    if (!r.grants.length) emptyRow(tb, 6, "Chưa có kết nối OAuth nào.");
+    if (!r.grants.length) emptyRow(tb, 5, "Chưa có kết nối OAuth nào.");
     r.grants.forEach(function (g) {
       var tr = document.createElement("tr");
-      tr.appendChild(td(g.clientName)); tr.appendChild(td(g.username || "?")); tr.appendChild(td(g.connectionLabel || "(đã xóa)")); tr.appendChild(td(g.scopes.join(", "))); tr.appendChild(td(fmt(g.createdAt)));
+      tr.appendChild(td(g.clientName)); tr.appendChild(td(g.connectionLabel || "(đã xóa)")); tr.appendChild(td(g.scopes.join(", "))); tr.appendChild(td(fmt(g.createdAt)));
       var act = document.createElement("td");
       act.appendChild(btn("Thu hồi", "danger", function () { if (confirm("Thu hồi kết nối này?")) api("DELETE", "/grants/" + encodeURIComponent(g.id)).then(refreshGrants).catch(fail); }));
       tr.appendChild(act); tb.appendChild(tr);
+    });
+  });
+}
+
+/* ---------- usage ---------- */
+function refreshUsage() {
+  return api("GET", "/usage").then(function (r) {
+    var tb = $("usage-list"); clear(tb);
+    if (!r.usage.length) emptyRow(tb, 4, "Chưa có lượt gọi nào.");
+    r.usage.forEach(function (u) {
+      var tr = document.createElement("tr");
+      tr.appendChild(td(u.day)); tr.appendChild(td(u.tool)); tr.appendChild(td(String(u.calls))); tr.appendChild(td(String(u.errors)));
+      tb.appendChild(tr);
     });
   });
 }
@@ -384,12 +360,6 @@ $("btn-base").addEventListener("click", function () {
     .catch(function (e) { flash("base-msg", e.message, false); });
 });
 $("btn-copy-endpoint").addEventListener("click", function () { if (lastStatus && lastStatus.mcpEndpoint) copyText(lastStatus.mcpEndpoint, $("btn-copy-endpoint")); });
-
-$("btn-invite").addEventListener("click", function () {
-  notice("");
-  api("POST", "/invites", {}).then(function (r) { $("invite-link").textContent = r.link; show("invite-once", true); return refreshInvites(); }).catch(fail);
-});
-$("btn-copy-invite").addEventListener("click", function () { copyText($("invite-link").textContent, $("btn-copy-invite")); });
 
 $("btn-add").addEventListener("click", startAdd);
 $("btn-add-cancel").addEventListener("click", function () {

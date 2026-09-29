@@ -263,7 +263,7 @@ evaluated code; the only capability boundary is the OAuth scopes the owner puts 
 ## 9. Accounts, multiple Apps Script connections, one-paste setup
 
 Goals:
-- Only accounts on this server can connect Claude, even on a public host.
+- Only the owner account of this server can connect Claude, even on a public host.
 - One server can hold many Apps Script **connections** (each = one deployed script = one Google account).
 - A connection is paired once and then **picked** on later OAuth connects, never re-paired.
 - A new script can be installed by pasting one personalized file. The user types no codes.
@@ -271,13 +271,12 @@ Goals:
 This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 where they conflict.
 
 ### 9.1 Accounts
-- `users`: `{id, username, passwordHash (scrypt as §3.1), role: "owner"|"member", createdAt}`. Usernames are
+- **One account.** The server is for personal use: there is exactly one account, the **owner**. There are no members and no
+  invites. `users` keeps the shape `{id, username, passwordHash (scrypt as §3.1), role: "owner", createdAt}` and `userId`
+  stays on connections, grants, tokens and PATs, so every ownership check keeps working. Usernames are
   `^[a-z0-9._-]{3,32}$`, stored lowercase.
-- First-run setup (admin UI, setup token as before) now creates the **owner** account: username (default `admin`) + password.
-- **Invites.** The owner creates an invite in the admin UI:
-  - random 32 bytes; only the hash is stored; TTL 7 days; single use.
-  - The link is `<publicBase>/account/invite#<token>`. The fragment keeps the token out of logs.
-  - The invite page reads the fragment, asks for a username and password, and creates a `member`. The owner can delete members.
+- The owner is created by first-run setup (admin UI, setup token as before: username, default `admin`, + password) or from
+  the environment (§10.3).
 - **Public session** (port 8787, needed for consent and `/account`):
   - cookie `asmcp_sess`: random 32 bytes; only the hash is persisted with `userId`, `createdAt`, `expiresAt` (30 days).
   - Flags: `HttpOnly; SameSite=Lax; Path=/`, plus `Secure` when the public base is https. Lax is required because the
@@ -293,7 +292,7 @@ This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 whe
 - `connections`: `{id, userId, label, url, instanceId, secret, account, pairedAt, lastOkAt, lastError, evalEnabled}`.
   - `instanceId` is a fresh UUID **per connection**. That lets one script pair with several servers and one server
     pair with several scripts.
-  - A user sees and uses only their own connections. The owner can see and remove all of them in the admin UI.
+  - Every connection belongs to a user (`userId`); a tool call only ever reaches the connection of its own token.
 - **Pending connection**, created by "Thêm Apps Script":
   - fields: `{id, userId, instanceId, secret, setupToken, expiresAt: now+30min, code?, url?}`;
   - kept in memory plus state, pruned when expired.
@@ -318,8 +317,8 @@ This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 whe
   - my PATs: create (choose connection + scopes, shown once), list, revoke;
   - logout / logout everywhere.
   Vietnamese UI, same visual style as the admin UI.
-- Admin UI (8788, owner): server settings, users + invites, all connections (read, remove), all grants and PATs
-  (revoke), plus the same "Thêm Apps Script" flow for the owner. The old single-link pairing UI is removed.
+- Admin UI (8788, owner): server settings, connections (read, remove), grants and PATs (revoke), usage (§10.2), plus the
+  same "Thêm Apps Script" flow. The old single-link pairing UI is removed.
 
 ### 9.3 Apps Script side
 - Multiple pairings:
@@ -377,6 +376,10 @@ State gets `version: 2`. Migrating a v1 file:
 - existing grants and PATs → bound to that connection;
 - a pending single-link pairing is dropped.
 
+Files written by a version that still had members and invites: on load every invite and every user that is not the owner
+is removed, together with their sessions, connections, pending connections, grants, tokens and PATs. The load logs
+`users_pruned` with the number of users removed (nothing else) and writes the cleaned state back.
+
 ### 9.6 Identifying a script
 Email is a display label, never a key: one Google account can own several scripts.
 - Pair responses (code and setup) return `{account, scriptId, scriptName, proof}`.
@@ -398,15 +401,45 @@ Where the server refines §9 (behaviour is otherwise as written above):
   pasted there is no mode. Polling covers both modes; a setup pair that answers `PAIRING_INVALID` is fatal (the script burns the
   token), `REQUEST_EXPIRED` is shown as a clock-skew note, `LIMIT_EXCEEDED` as "20 kết nối".
 - **Sessions:** the per-session CSRF token is derived from the cookie value (`HMAC(cookie, "asmcp-csrf-v1")`), so nothing but
-  the cookie hash is stored. Login and invite-accept (no session yet) rely on Origin plus JSON-only content type; the consent
+  the cookie hash is stored. Login (no session yet) relies on Origin plus JSON-only content type; the consent
   login form uses the consent nonce.
 - **Origin check:** an `Origin` equal to the public base origin passes. Additionally it passes when no base is configured, or
   when the request's own Host is loopback and equals the Origin (using `/account` on localhost while the base is a tunnel URL).
-- **Limits:** rate-limit counters are 5 failures / 15 min, per IP (`ip:`, `invite:` and `setup:` keys) and per username. A
+- **Limits:** rate-limit counters are 5 failures / 15 min, per IP (`ip:` and `setup:` keys) and per username. A
   success resets only the username counter. At most 5 pending connections and 20 connections per user.
 - **Consent:** `GET /oauth/consent?nonce=` re-renders the same step (used to come back from the add flow); the nonce is only
   consumed by Approve or Deny. Approve records `lastConnectionId` on the user (the preselected one next time).
-- **Removal:** deleting a connection keeps its grants, tokens and PATs (tools answer with the removal message); deleting a
-  member removes everything of theirs.
+- **Removal:** deleting a connection keeps its grants, tokens and PATs (tools answer with the removal message).
 - **Personalised Code.gs:** read once at startup from `APPS_SCRIPT_BUNDLE_PATH` (default `/app/apps-script/Code.gs`). It must
   contain the line `var ASMCP_SETUP_ = null;` exactly once, otherwise option 1 is hidden and nothing is served (fail closed).
+
+## 10. Storage, usage, owner bootstrap
+
+### 10.1 Storage
+- `DATABASE_URL` (a `postgres://` or `postgresql://` URL, optional) → PostgreSQL. Unset → local files in `DATA_DIR`
+  (today's behaviour). TLS is whatever the URL says (`sslmode=...`); there is no separate switch.
+- `StateStore` keeps its API: an in-memory document and a serialized `update(mutator)`. Persistence moves behind a port
+  `StateBackend { load(): Promise<unknown | null>; save(doc): Promise<void>; close(): Promise<void> }`.
+  - **Local:** the atomic JSON file `DATA_DIR/state.json`, mode 0600, as before.
+  - **PostgreSQL** (driver `pg`, no ORM): one table, created on startup with `CREATE TABLE IF NOT EXISTS`:
+    `asmcp_state(id smallint primary key check (id = 1), doc jsonb not null, updated_at timestamptz not null)`.
+    `save` is an upsert of the single row. **Exactly one server instance may use a database:** nothing detects a second
+    writer, and the last write wins.
+- When the table is empty and `DATA_DIR/state.json` exists, the file is imported once (v1 → v2 migration still applies) and
+  `state_imported_from_file` is logged. The file is left untouched; from then on the database is the only source.
+
+### 10.2 Usage
+- The tool wrapper counts every MCP tool call after it finishes: `state.usage[day][tool] = {calls, errors}`, where `day` is
+  the UTC date `YYYY-MM-DD`. `errors` counts calls that failed for any reason (gateway error, refused scope, removed
+  connection, crash).
+- Nothing else is kept: no user, connection or token, no ranges, values, queries, code, args or error messages.
+- Counters live in memory and are merged into the state every 60 s and on shutdown, so a busy server does not rewrite the
+  state on every call. A crash loses at most the last minute. A failure to count or to write never affects a tool call.
+- Days older than 30 (today and the 29 before it) are dropped whenever the counters are merged.
+- Views: a plain day × tool table ("Lượt dùng 30 ngày") on `/account` (`GET /account/api/usage`) and on the admin UI
+  (`GET /api/usage`). Both return `{usage: [{day, tool, calls, errors}]}`, newest day first.
+
+### 10.3 Owner bootstrap from env
+`ADMIN_USERNAME` (default `admin`) and `ADMIN_PASSWORD` (min 10 chars) create the owner only when no owner exists. Later
+starts ignore them: they never overwrite a password. A too-short password → startup error. When they are used, no setup
+token is printed. The docs recommend changing the password in the UI and removing the env var afterwards.

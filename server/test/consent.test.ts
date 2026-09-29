@@ -410,19 +410,6 @@ describe("tenant isolation", () => {
     await cm.close();
   });
 
-  it("deleting a member revokes their tokens for good (401), and leaves everyone else's alone", async () => {
-    const t = await twoTenants();
-    h = t.harness;
-    const marys = await h.pats.create(t.mary.id, t.maryConn, "marys", ["sheets.read"]);
-    const owners = await h.pats.create(h.ownerId, h.connectionId, "owners", ["sheets.read"]);
-    const oauth = await fullOAuth(h, "sheets.read", { username: "mary", password: t.mary.password });
-    expect(await h.accounts.deleteMember(t.mary.id)).toBe(true);
-    await expect(h.provider.verifyAccessToken(marys.token)).rejects.toThrow();
-    await expect(h.provider.verifyAccessToken(oauth.tokens.access_token)).rejects.toThrow();
-    await expect(h.provider.verifyAccessToken(owners.token)).resolves.toBeDefined();
-    expect(h.registry.get(t.maryConn)).toBeUndefined();
-  });
-
   it("a PAT presented as a different user's is not a thing: extra always comes from the stored record", async () => {
     const t = await twoTenants();
     h = t.harness;

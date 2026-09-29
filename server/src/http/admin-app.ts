@@ -11,6 +11,7 @@ import type { ConnectionRegistry } from "../connection/connection-registry.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import type { PublicBaseUrl } from "../settings/public-base-url.js";
+import type { UsageService } from "../usage/usage-service.js";
 import { safeEqualStr } from "../util/crypto.js";
 import { parseCookies } from "../util/http.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
@@ -29,6 +30,7 @@ export interface AdminAppDeps {
   baseUrl: PublicBaseUrl;
   pats: PatService;
   provider: GsmcpOAuthProvider;
+  usage: UsageService;
   allowedHosts: string[];
   trustProxy: boolean | number | string;
   logger?: Logger;
@@ -235,39 +237,9 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     }),
   );
 
-  // users + invites
-  api.get("/users", (_req, res) => {
-    const conns = deps.registry.listAll();
-    res.json({ users: deps.accounts.listUsers().map((u) => ({ ...u, connections: conns.filter((c) => c.userId === u.id).length })) });
+  api.get("/usage", (_req, res) => {
+    res.json({ usage: deps.usage.rows() });
   });
-  api.delete(
-    "/users/:id",
-    wrap(async (req, res) => {
-      if (!(await deps.accounts.deleteMember(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy người dùng.");
-      res.json({ ok: true });
-    }),
-  );
-
-  api.get("/invites", (_req, res) => {
-    res.json({ invites: deps.accounts.listInvites() });
-  });
-  api.post(
-    "/invites",
-    wrap(async (req, res) => {
-      const base = deps.baseUrl.get();
-      if (!base) throw new HttpError(409, "PUBLIC_BASE_URL_REQUIRED", "Hãy đặt Public base URL trước khi tạo lời mời.");
-      const { token, invite } = await deps.accounts.createInvite(ownerId(req));
-      // The token is only ever returned here, and only in the link's fragment so it stays out of server logs.
-      res.status(201).json({ invite, link: `${base}/account/invite#${token}` });
-    }),
-  );
-  api.delete(
-    "/invites/:id",
-    wrap(async (req, res) => {
-      if (!(await deps.accounts.deleteInvite(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy lời mời.");
-      res.json({ ok: true });
-    }),
-  );
 
   // connections: the owner sees and removes everyone's, and adds their own with the same flow as /account
   api.get("/connections", (_req, res) => {

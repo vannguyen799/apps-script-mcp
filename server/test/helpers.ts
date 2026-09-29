@@ -8,6 +8,7 @@ import type { Express } from "express";
 import { AccountService } from "../src/auth/accounts.js";
 import { AdminAuth } from "../src/auth/admin-auth.js";
 import { GsmcpOAuthProvider } from "../src/auth/oauth-provider.js";
+import { hashPassword } from "../src/auth/password.js";
 import { PatService } from "../src/auth/pat.js";
 import { ConnectionRegistry } from "../src/connection/connection-registry.js";
 import type { EvalResult, ScriptEvaluator } from "../src/core/script/evaluator.js";
@@ -16,6 +17,7 @@ import { createAdminApp } from "../src/http/admin-app.js";
 import { createPublicApp } from "../src/http/public-app.js";
 import { PublicBaseUrl } from "../src/settings/public-base-url.js";
 import { StateStore } from "../src/store/state-store.js";
+import { UsageService } from "../src/usage/usage-service.js";
 import { FailureLimiter } from "../src/util/rate-limit.js";
 
 export class FakeGateway implements G.SheetsGateway {
@@ -77,6 +79,7 @@ export class FakeEvalGateway extends FakeGateway implements ScriptEvaluator {
 export interface Harness {
   dir: string;
   store: StateStore;
+  usage: UsageService;
   /** Gateway of the owner's default connection. */
   gateway: FakeGateway;
   /** Gateways by connection id (created on demand for connections without one). */
@@ -128,6 +131,7 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "asmcp-test-"));
   const store = new StateStore(dir);
   await store.load();
+  const usage = new UsageService(store);
   const evaluator = new FakeEvaluator();
   const gateway: FakeGateway = opts.withEvaluator ? new FakeEvalGateway(evaluator) : new FakeGateway();
   const gateways = new Map<string, FakeGateway>();
@@ -162,8 +166,8 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
     const t = await accounts.ensureSetupToken();
     ownerId = (await accounts.completeSetup(t!, username, password)).id;
   }
-  const publicApp = createPublicApp({ provider, baseUrl, accounts, registry, pats, ipLimiter, evaluatorAvailable: !!opts.withEvaluator, trustProxy: false });
-  const adminApp = createAdminApp({ auth: admin, accounts, limiter: ipLimiter, registry, baseUrl, pats, provider, allowedHosts: ["admin.internal"], trustProxy: false });
+  const publicApp = createPublicApp({ provider, baseUrl, accounts, registry, pats, usage, ipLimiter, evaluatorAvailable: !!opts.withEvaluator, trustProxy: false });
+  const adminApp = createAdminApp({ auth: admin, accounts, limiter: ipLimiter, registry, baseUrl, pats, provider, usage, allowedHosts: ["admin.internal"], trustProxy: false });
   const ps = await listen(publicApp);
   const as = await listen(adminApp);
   const publicUrl = `http://127.0.0.1:${(ps.address() as AddressInfo).port}`;
@@ -194,14 +198,19 @@ export async function makeHarness(opts: HarnessOptions = {}): Promise<Harness> {
   let connectionId = "";
   if (ownerId && opts.connection !== false) connectionId = await addConnection(ownerId, "Owner script", gateway);
 
+  // The product has a single account. Tenant-isolation tests still need a second one, so this writes it straight into the
+  // state (there is no way to create one through the product).
   const addMember = async (name: string, pw = "member-password-1") => {
-    const { token } = await accounts.createInvite(ownerId);
-    const u = await accounts.acceptInvite(token, name, pw);
-    return { id: u.id, username: u.username, password: pw };
+    const id = randomUUID();
+    const passwordHash = await hashPassword(pw);
+    await store.update((st) => {
+      st.users[id] = { id, username: name, passwordHash, role: "owner", createdAt: Date.now(), lastConnectionId: null };
+    });
+    return { id, username: name, password: pw };
   };
 
   return {
-    dir, store, gateway, gateways, evaluator, admin, accounts, pats, provider, baseUrl, registry, ipLimiter, userLimiter, publicApp, adminApp, publicUrl, adminUrl,
+    dir, store, usage, gateway, gateways, evaluator, admin, accounts, pats, provider, baseUrl, registry, ipLimiter, userLimiter, publicApp, adminApp, publicUrl, adminUrl,
     username, password, ownerId, connectionId, addConnection, addMember,
     close: async () => {
       registry.stop();

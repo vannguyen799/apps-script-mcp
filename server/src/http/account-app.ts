@@ -12,6 +12,7 @@ import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import { safeEqualStr } from "../util/crypto.js";
 import { originAllowed } from "../util/http.js";
+import type { UsageService } from "../usage/usage-service.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
 import { mountPendingRoutes } from "./connection-api.js";
 import { HttpError, mapKnownError } from "./errors.js";
@@ -24,6 +25,7 @@ export interface AccountRouterDeps {
   /** Current public base URL (for the Secure flag and the Origin check). */
   baseUrl: () => string | undefined;
   ipLimiter: FailureLimiter;
+  usage: UsageService;
   logger?: Logger;
   /** Overridable for tests; defaults to the bundled account-ui/index.html. */
   indexHtml?: string;
@@ -31,7 +33,7 @@ export interface AccountRouterDeps {
 
 type SessionRequest = Request & { pubSession?: PublicSession };
 
-/** The public /account pages and JSON API (DESIGN.md 9.1, 9.2): login, invite accept, connections, PATs. */
+/** The public /account pages and JSON API (DESIGN.md 9.1, 9.2): login, connections, PATs, usage. */
 export function createAccountRouter(deps: AccountRouterDeps): Router {
   const log = deps.logger ?? nullLogger;
   const html = deps.indexHtml ?? readFileSync(new URL("../account-ui/index.html", import.meta.url), "utf8");
@@ -63,7 +65,6 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       .send(html.replaceAll("{{NONCE}}", nonce));
   };
   router.get("/", page);
-  router.get("/invite", page);
 
   // ---- write guards: Origin, JSON only -------------------------------------------
   router.use((req, res, next) => {
@@ -108,24 +109,6 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
         res.json(await startSession(res, user.id));
       } catch (e) {
         if (e instanceof AccountError) log.warn("account_login_failed", { resultCode: e.code });
-        throw e;
-      }
-    }),
-  );
-
-  router.post(
-    "/invite/accept",
-    wrap(async (req, res) => {
-      const key = `invite:${ipOf(req)}`;
-      const wait = deps.ipLimiter.blockedFor(key);
-      if (wait > 0) throw new AccountError("RATE_LIMITED", "Thử sai quá nhiều lần. Hãy thử lại sau.", wait);
-      const b = body(req);
-      try {
-        const user = await deps.accounts.acceptInvite(b.token, b.username, b.password);
-        log.info("invite_accepted");
-        res.status(201).json(await startSession(res, user.id));
-      } catch (e) {
-        if (e instanceof AccountError && e.code === "BAD_INVITE") deps.ipLimiter.recordFailure(key);
         throw e;
       }
     }),
@@ -210,6 +193,11 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   const pendingRouter = express.Router();
   router.use("/api", pendingRouter);
   mountPendingRoutes(pendingRouter, deps.registry, me, wrap);
+
+  /** DESIGN.md 10.2: calls and errors per day and tool over the last 30 days. */
+  router.get("/api/usage", (_req, res) => {
+    res.json({ usage: deps.usage.rows() });
+  });
 
   router.get("/api/pats", (req, res) => {
     res.json({ pats: deps.pats.list(me(req)) });

@@ -5,7 +5,6 @@ import type { FailureLimiter } from "../util/rate-limit.js";
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, hashPassword, normalizeUsername, verifyAgainstDummy, verifyPasswordHash } from "./password.js";
 
 export const SESSION_TTL_MS = 30 * 24 * 3600_000;
-export const INVITE_TTL_MS = 7 * 24 * 3600_000;
 const MAX_SESSIONS_PER_USER = 50;
 
 export type AccountErrorCode =
@@ -13,8 +12,6 @@ export type AccountErrorCode =
   | "ALREADY_SETUP"
   | "WEAK_PASSWORD"
   | "BAD_USERNAME"
-  | "USERNAME_TAKEN"
-  | "BAD_INVITE"
   | "BAD_CREDENTIALS"
   | "RATE_LIMITED"
   | "NOT_FOUND"
@@ -35,13 +32,6 @@ export interface UserView {
   username: string;
   role: UserRole;
   createdAt: number;
-}
-
-export interface InviteView {
-  id: string;
-  createdAt: number;
-  expiresAt: number;
-  createdBy: string;
 }
 
 export interface PublicSession {
@@ -80,7 +70,7 @@ function checkUsername(username: unknown): string {
   return u;
 }
 
-/** Users, first-run owner setup, invites, public sessions and login (DESIGN.md 9.1). */
+/** The owner account: first-run setup, env bootstrap, public sessions and login (DESIGN.md 9.1, 10.3). */
 export class AccountService {
   private readonly store: StateStore;
   private readonly now: () => number;
@@ -138,6 +128,26 @@ export class AccountService {
       if (Object.values(s.users).some((u) => u.role === "owner")) throw new AccountError("ALREADY_SETUP", "Đã thiết lập chủ sở hữu.");
       s.users[user.id] = user;
       s.admin.setupTokenHash = null;
+    });
+    return user;
+  }
+
+  /**
+   * DESIGN.md 10.3: creates the owner from ADMIN_USERNAME / ADMIN_PASSWORD, but only when no owner exists. Later starts
+   * ignore the pair (a password is never overwritten). A too-short password is an error, so the caller aborts startup.
+   * Returns the created user, or null when an owner already exists.
+   */
+  async bootstrapOwner(username: string, password: string): Promise<StoredUser | null> {
+    if (!this.needsSetup()) return null;
+    const name = normalizeUsername(username);
+    if (!name) throw new Error("ADMIN_USERNAME must be 3-32 characters: lowercase letters, digits, dot, underscore or dash.");
+    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) throw new Error(`ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+    if (password.length > MAX_PASSWORD_LENGTH) throw new Error("ADMIN_PASSWORD is too long.");
+    const passwordHash = await hashPassword(password);
+    const user: StoredUser = { id: randomUUID(), username: name, passwordHash, role: "owner", createdAt: this.now(), lastConnectionId: null };
+    await this.store.update((s) => {
+      s.users[user.id] = user;
+      s.admin.setupTokenHash = null; // no setup token is needed (or printed) once the owner exists
     });
     return user;
   }
@@ -208,80 +218,5 @@ export class AccountService {
 
   private pruneSessions(s: PersistedState, t: number): void {
     for (const [h, v] of Object.entries(s.sessions)) if (v.expiresAt <= t) delete s.sessions[h];
-  }
-
-  // ---- invites -----------------------------------------------------------
-  async createInvite(createdBy: string): Promise<{ token: string; invite: InviteView }> {
-    const token = randomB64Url(32);
-    const t = this.now();
-    const rec = { id: randomUUID(), createdBy, createdAt: t, expiresAt: t + INVITE_TTL_MS };
-    await this.store.update((s) => {
-      for (const [h, i] of Object.entries(s.invites)) if (i.expiresAt <= t) delete s.invites[h];
-      s.invites[sha256Hex(token)] = rec;
-    });
-    return { token, invite: this.inviteView(rec) };
-  }
-
-  private inviteView(i: { id: string; createdAt: number; expiresAt: number; createdBy: string }): InviteView {
-    return { id: i.id, createdAt: i.createdAt, expiresAt: i.expiresAt, createdBy: this.store.state.users[i.createdBy]?.username ?? "" };
-  }
-
-  listInvites(): InviteView[] {
-    const t = this.now();
-    return Object.values(this.store.state.invites)
-      .filter((i) => i.expiresAt > t)
-      .map((i) => this.inviteView(i))
-      .sort((a, b) => b.createdAt - a.createdAt);
-  }
-
-  async deleteInvite(id: string): Promise<boolean> {
-    let found = false;
-    await this.store.update((s) => {
-      for (const [h, i] of Object.entries(s.invites)) {
-        if (i.id === id) {
-          delete s.invites[h];
-          found = true;
-        }
-      }
-    });
-    return found;
-  }
-
-  /** Single use: the invite is consumed in the same synchronous step that creates the user. */
-  async acceptInvite(token: unknown, username: unknown, password: unknown): Promise<StoredUser> {
-    const th = typeof token === "string" && token.length > 0 && token.length <= 200 ? sha256Hex(token) : "";
-    const known = th ? this.store.state.invites[th] : undefined;
-    if (!known || known.expiresAt <= this.now()) throw new AccountError("BAD_INVITE", "Lời mời không hợp lệ hoặc đã hết hạn.");
-    const name = checkUsername(username);
-    checkPassword(password);
-    const passwordHash = await hashPassword(password);
-    const user: StoredUser = { id: randomUUID(), username: name, passwordHash, role: "member", createdAt: this.now(), lastConnectionId: null };
-    await this.store.update((s) => {
-      const inv = s.invites[th];
-      if (!inv || inv.expiresAt <= this.now()) throw new AccountError("BAD_INVITE", "Lời mời không hợp lệ hoặc đã hết hạn.");
-      if (Object.values(s.users).some((u) => u.username === name)) throw new AccountError("USERNAME_TAKEN", "Tên đăng nhập đã tồn tại.");
-      delete s.invites[th];
-      s.users[user.id] = user;
-    });
-    return user;
-  }
-
-  // ---- removal -----------------------------------------------------------
-  /** Deletes a member and everything of theirs: sessions, connections, pending connections, grants, tokens and PATs. */
-  async deleteMember(userId: string): Promise<boolean> {
-    const u = this.store.state.users[userId];
-    if (!u) return false;
-    if (u.role === "owner") throw new AccountError("FORBIDDEN", "Không thể xóa tài khoản chủ sở hữu.");
-    await this.store.update((s) => {
-      delete s.users[userId];
-      for (const [h, v] of Object.entries(s.sessions)) if (v.userId === userId) delete s.sessions[h];
-      for (const [id, c] of Object.entries(s.connections)) if (c.userId === userId) delete s.connections[id];
-      for (const [id, p] of Object.entries(s.pendingConnections)) if (p.userId === userId) delete s.pendingConnections[id];
-      for (const [id, g] of Object.entries(s.oauth.grants)) if (g.userId === userId) delete s.oauth.grants[id];
-      for (const [h, a] of Object.entries(s.oauth.accessTokens)) if (a.userId === userId) delete s.oauth.accessTokens[h];
-      for (const [h, r] of Object.entries(s.oauth.refreshTokens)) if (r.userId === userId) delete s.oauth.refreshTokens[h];
-      for (const [h, p] of Object.entries(s.pats)) if (p.userId === userId) delete s.pats[h];
-    });
-    return true;
   }
 }

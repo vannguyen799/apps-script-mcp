@@ -290,7 +290,7 @@ describe("rate limit", () => {
     h = await makeHarness();
     // rebuild a public app with a tiny limit
     const { createPublicApp } = await import("../src/http/public-app.js");
-    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, ipLimiter: h.ipLimiter, trustProxy: false, mcpRateLimitPerMin: 3 });
+    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, usage: h.usage, ipLimiter: h.ipLimiter, trustProxy: false, mcpRateLimitPerMin: 3 });
     const srv = app.listen(0);
     await new Promise((r) => srv.once("listening", r));
     const port = (srv.address() as { port: number }).port;

@@ -1,6 +1,6 @@
 import type { Request } from "express";
 import { afterEach, describe, expect, it } from "vitest";
-import { AccountService, INVITE_TTL_MS } from "../src/auth/accounts.js";
+import { AccountService } from "../src/auth/accounts.js";
 import { verifyAgainstDummy } from "../src/auth/password.js";
 import { StateStore } from "../src/store/state-store.js";
 import { sha256Hex } from "../src/util/crypto.js";
@@ -240,9 +240,9 @@ describe("public CSRF, Origin and content-type", () => {
 });
 
 describe("/account pages", () => {
-  it("serves the page with a strict nonce CSP and Vietnamese text, on /account and /account/invite", async () => {
+  it("serves the page with a strict nonce CSP and Vietnamese text", async () => {
     h = await makeHarness();
-    for (const p of ["/account", "/account/invite"]) {
+    for (const p of ["/account"]) {
       const r = await fetch(`${h.publicUrl}${p}`);
       expect(r.status).toBe(200);
       const csp = r.headers.get("content-security-policy")!;
@@ -269,95 +269,6 @@ describe("/account pages", () => {
     h = await makeHarness({ baseUrl: false });
     expect((await fetch(`${h.publicUrl}/account`)).status).toBe(200);
     expect((await pub(h, "POST", "/account/login", { body: { username: h.username, password: h.password } })).status).toBe(200);
-  });
-});
-
-describe("invites", () => {
-  it("are created by the owner, stored only as hashes, valid 7 days, and shown as a link with the token in the fragment", async () => {
-    h = await makeHarness();
-    const { token, invite } = await h.accounts.createInvite(h.ownerId);
-    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/); // 32 random bytes
-    expect(JSON.stringify(h.store.state)).not.toContain(token);
-    expect(Object.keys(h.store.state.invites)).toEqual([sha256Hex(token)]);
-    expect(invite.expiresAt - invite.createdAt).toBe(INVITE_TTL_MS);
-    expect(INVITE_TTL_MS).toBe(7 * 24 * 3600_000);
-    expect(h.accounts.listInvites()).toHaveLength(1);
-    expect(JSON.stringify(h.accounts.listInvites())).not.toContain(token);
-  });
-
-  it("are single use: the public accept page creates a member and logs them in; a second use is refused", async () => {
-    h = await makeHarness();
-    const { token } = await h.accounts.createInvite(h.ownerId);
-    const ok = await pub(h, "POST", "/account/invite/accept", { body: { token, username: "Newbie_1", password: "newbie-password" } });
-    expect(ok.status).toBe(201);
-    expect(ok.json).toMatchObject({ username: "newbie_1", role: "member" });
-    expect(ok.headers.get("set-cookie")).toMatch(/^asmcp_sess=/);
-    expect(h.accounts.findByUsername("newbie_1")).toMatchObject({ role: "member" });
-    expect(h.accounts.listInvites()).toHaveLength(0);
-    const again = await pub(h, "POST", "/account/invite/accept", { body: { token, username: "second", password: "second-password" } });
-    expect(again.status).toBe(400);
-    expect(again.json.error.code).toBe("BAD_INVITE");
-    expect(h.accounts.findByUsername("second")).toBeUndefined();
-    // and the new member can log in normally
-    expect((await pub(h, "POST", "/account/login", { body: { username: "newbie_1", password: "newbie-password" } })).status).toBe(200);
-  });
-
-  it("two simultaneous accepts of one invite create exactly one user", async () => {
-    h = await makeHarness();
-    const { token } = await h.accounts.createInvite(h.ownerId);
-    const results = await Promise.allSettled([h.accounts.acceptInvite(token, "racer1", "racer-password-1"), h.accounts.acceptInvite(token, "racer2", "racer-password-2")]);
-    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
-    expect(Object.values(h.store.state.users).filter((u) => u.role === "member")).toHaveLength(1);
-  });
-
-  it("expire after 7 days", async () => {
-    let t = 1_000_000;
-    const { accounts, dir } = await accountsWith(() => t);
-    try {
-      const owner = accounts.findByUsername("boss")!;
-      const { token } = await accounts.createInvite(owner.id);
-      t += INVITE_TTL_MS - 1;
-      expect(accounts.listInvites()).toHaveLength(1);
-      t += 2;
-      expect(accounts.listInvites()).toHaveLength(0);
-      await expect(accounts.acceptInvite(token, "late", "late-password-1")).rejects.toMatchObject({ code: "BAD_INVITE" });
-      expect(accounts.findByUsername("late")).toBeUndefined();
-    } finally {
-      const { rm } = await import("node:fs/promises");
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("a bad username, weak password or taken username does not consume the invite", async () => {
-    h = await makeHarness();
-    const { token } = await h.accounts.createInvite(h.ownerId);
-    await expect(h.accounts.acceptInvite(token, "A B", "long-enough-pw")).rejects.toMatchObject({ code: "BAD_USERNAME" });
-    await expect(h.accounts.acceptInvite(token, "ab", "long-enough-pw")).rejects.toMatchObject({ code: "BAD_USERNAME" });
-    await expect(h.accounts.acceptInvite(token, "fine", "short")).rejects.toMatchObject({ code: "WEAK_PASSWORD" });
-    await expect(h.accounts.acceptInvite(token, "admin", "long-enough-pw")).rejects.toMatchObject({ code: "USERNAME_TAKEN" });
-    expect(h.accounts.listInvites()).toHaveLength(1);
-    await expect(h.accounts.acceptInvite(token, "fine", "long-enough-pw")).resolves.toMatchObject({ username: "fine" });
-  });
-
-  it("unknown tokens are refused with the same error, and repeated bad tokens are rate limited per IP", async () => {
-    h = await makeHarness();
-    for (let i = 0; i < 5; i++) {
-      const r = await pub(h, "POST", "/account/invite/accept", { body: { token: `guess${i}`, username: "sneaky", password: "sneaky-password" } });
-      expect(r.status).toBe(400);
-      expect(r.json.error.code).toBe("BAD_INVITE");
-    }
-    const { token } = await h.accounts.createInvite(h.ownerId);
-    const blocked = await pub(h, "POST", "/account/invite/accept", { body: { token, username: "sneaky", password: "sneaky-password" } });
-    expect(blocked.status).toBe(429);
-  });
-
-  it("the owner can delete a pending invite, and a member cannot be deleted into the owner", async () => {
-    h = await makeHarness();
-    const { token, invite } = await h.accounts.createInvite(h.ownerId);
-    expect(await h.accounts.deleteInvite(invite.id)).toBe(true);
-    expect(await h.accounts.deleteInvite(invite.id)).toBe(false);
-    await expect(h.accounts.acceptInvite(token, "gone", "gone-password-1")).rejects.toMatchObject({ code: "BAD_INVITE" });
-    await expect(h.accounts.deleteMember(h.ownerId)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 

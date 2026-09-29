@@ -11,17 +11,20 @@ import { createAdminApp } from "./http/admin-app.js";
 import { createPublicApp } from "./http/public-app.js";
 import { createLogger } from "./log.js";
 import { PublicBaseUrl } from "./settings/public-base-url.js";
-import { StateStore } from "./store/state-store.js";
+import { openStateStore } from "./store/open-store.js";
+import { UsageService } from "./usage/usage-service.js";
 import { FailureLimiter } from "./util/rate-limit.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const log = createLogger(config.logLevel);
 
-  const store = new StateStore(config.dataDir, log);
+  const store = await openStateStore(config, log);
   await store.load();
+  log.info("storage_ready", { backend: config.databaseUrl ? "postgres" : "local" });
+  const usage = new UsageService(store, { logger: log });
 
-  const ipLimiter = new FailureLimiter(5, 15 * 60_000); // login / setup / invite failures per IP (admin UI, /account, consent)
+  const ipLimiter = new FailureLimiter(5, 15 * 60_000); // login / setup failures per IP (admin UI, /account, consent)
   const userLimiter = new FailureLimiter(5, 15 * 60_000); // login failures per username
   const accounts = new AccountService({ store, ipLimiter, userLimiter });
   const admin = new AdminAuth();
@@ -44,6 +47,7 @@ async function main(): Promise<void> {
     accounts,
     registry,
     pats,
+    usage,
     ipLimiter,
     evaluatorAvailable: true,
     trustProxy: config.trustProxy,
@@ -57,11 +61,17 @@ async function main(): Promise<void> {
     baseUrl,
     pats,
     provider,
+    usage,
     allowedHosts: config.adminAllowedHosts,
     trustProxy: config.trustProxy,
     logger: log,
   });
 
+  // DESIGN.md 10.3: ADMIN_USERNAME / ADMIN_PASSWORD create the owner only when there is none (a short password aborts startup).
+  if (config.adminPassword !== undefined) {
+    const owner = await accounts.bootstrapOwner(config.adminUsername, config.adminPassword);
+    if (owner) log.info("owner_bootstrapped_from_env");
+  }
   const setupToken = await accounts.ensureSetupToken();
   if (setupToken) {
     // Deliberately bypasses the logger: printed once, to stdout only.
@@ -73,13 +83,17 @@ async function main(): Promise<void> {
     adminApp.listen(config.portAdmin, () => log.info("admin_listening", { port: config.portAdmin })),
   ];
   registry.start();
+  usage.start();
 
   const shutdown = (): void => {
     registry.stop();
-    void store.flush().finally(() => {
-      for (const s of servers) s.close();
-      setTimeout(() => process.exit(0), 500).unref();
-    });
+    usage.stop();
+    for (const s of servers) s.close(); // stop accepting first, then write what is buffered and release the database
+    void usage
+      .flush()
+      .then(() => store.close())
+      .catch(() => {})
+      .finally(() => setTimeout(() => process.exit(0), 200).unref());
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

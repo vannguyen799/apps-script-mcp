@@ -15,9 +15,9 @@ Claude / MCP client ──OAuth 2.1 / PAT──▶ Docker MCP server ──HMAC�
 - **Tunnel** (Cloudflare Tunnel / ngrok) là tùy chọn, chỉ cần khi muốn Claude trên web kết nối từ Internet.
 
 > English summary: a self-hosted MCP server (Docker) that lets Claude read and write Google Sheets through a Google
-> Apps Script you deploy under your own account. There are no Google credentials on the server. The server has its
-> own user accounts (owner + invited members); each user pairs one or more Apps Script "connections" once (by pasting
-> a personalised `Code.gs`, no code to type) and later just picks one when connecting Claude. MCP clients
+> Apps Script you deploy under your own account. There are no Google credentials on the server. The server is for
+> personal use: one owner account; you pair one or more Apps Script "connections" once (by pasting a personalised
+> `Code.gs`, no code to type) and later just pick one when connecting Claude. MCP clients
 > authenticate with OAuth 2.1 (login + connection picker) or a personal access token bound to one connection. The
 > server authenticates to Apps Script with an HMAC secret. Only allowlisted spreadsheets are reachable. See
 > [docs/DESIGN.md](docs/DESIGN.md).
@@ -73,9 +73,10 @@ Mở trang tài khoản và đăng nhập bằng tài khoản chủ sở hữu v
 - máy local: **http://localhost:8787/account**;
 - khi đã có tunnel: `https://<domain>/account` (đặt `PUBLIC_BASE_URL` hoặc nhập ở trang admin, xem [Public qua tunnel](#public-qua-tunnel)).
 
-Muốn cho người khác dùng chung server, vào trang admin (http://localhost:8788) → *Người dùng & lời mời* → **Tạo lời mời**, rồi gửi
-đường dẫn `https://<domain>/account/invite#...` cho họ. Lời mời có hiệu lực 7 ngày, dùng được một lần, và người được mời tự đặt
-tên đăng nhập và mật khẩu. Mỗi người chỉ thấy và chỉ dùng được các kết nối Apps Script của chính mình.
+Server này dành cho **một người dùng**: chỉ có tài khoản chủ sở hữu, không có thành viên hay lời mời. Nếu bản cũ của bạn từng có thành viên,
+khi khởi động lần đầu với bản mới, các thành viên cùng kết nối, token và PAT của họ bị xóa (log ghi `users_pruned` kèm số lượng).
+
+Muốn tạo sẵn tài khoản chủ sở hữu mà không qua setup token (ví dụ triển khai tự động), xem [Tạo chủ sở hữu từ biến môi trường](#tạo-chủ-sở-hữu-từ-biến-môi-trường).
 
 ### 3. Kết nối một Apps Script (dán 1 file, không nhập mã)
 
@@ -158,10 +159,46 @@ khi tạo token, rồi thêm connector như ở bước 5 với token đó. Nên
 và metadata OAuth cũng chỉ quảng bá hai scope Sheets. Vì vậy **connector claude.ai chỉ có quyền Sheets** trừ khi bạn dùng đường PAT
 ở trên (một PAT có thể dán vào client hỗ trợ header tùy chỉnh). Nếu một client cố tình xin `script.eval`, trang đồng ý sẽ hiện cảnh báo đỏ và bạn vẫn phải đăng nhập và bấm Cho phép.
 
+## Lưu trữ: file hay PostgreSQL
+
+Mặc định server lưu trạng thái (tài khoản, kết nối Apps Script, token dạng hash, số liệu dùng) trong file `state.json` ở `DATA_DIR` (volume `/data`), ghi nguyên tử, quyền `0600`.
+Muốn dùng PostgreSQL, đặt `DATABASE_URL`:
+
+```env
+DATABASE_URL=postgres://asmcp:mat-khau@postgres:5432/asmcp
+```
+
+- TLS theo tham số của URL (ví dụ `?sslmode=require`); không có biến riêng cho TLS.
+- Server tự tạo bảng `asmcp_state` (một dòng: `doc jsonb`, `updated_at`). Cơ sở dữ liệu chỉ dành cho **một instance server**: không có cơ chế phát hiện hai server cùng ghi, bản ghi sau ghi đè bản trước.
+- Lần khởi động đầu với database còn trống, nếu `DATA_DIR/state.json` tồn tại thì nó được nhập vào một lần (file cũ định dạng v1 vẫn được chuyển sang v2) và log ghi `state_imported_from_file`. File được giữ nguyên, không bị sửa; sau đó database là nguồn duy nhất.
+- Không đặt `DATABASE_URL` thì mọi thứ chạy như trước, không cần PostgreSQL.
+
+Với docker compose có sẵn một PostgreSQL tùy chọn (profile `postgres`, không mở cổng ra ngoài): đặt `POSTGRES_PASSWORD` và `DATABASE_URL` trong `.env` (xem `.env.example`), rồi chạy `docker compose --profile postgres up -d`.
+
+## Tạo chủ sở hữu từ biến môi trường
+
+Thay cho bước setup token ở trang admin, có thể đặt trong `.env`:
+
+```env
+ADMIN_USERNAME=admin        # mặc định admin
+ADMIN_PASSWORD=mat-khau-dai-it-nhat-10-ky-tu
+```
+
+- Chỉ dùng khi **chưa có** chủ sở hữu. Khi đó server tạo tài khoản, không in setup token.
+- Các lần khởi động sau bỏ qua hai biến này và **không bao giờ ghi đè** mật khẩu (đổi mật khẩu ở `/account` hay trang admin không bị ảnh hưởng).
+- Mật khẩu ngắn hơn 10 ký tự thì server báo lỗi và không khởi động.
+- Sau khi vào được, nên đổi mật khẩu trên giao diện rồi xóa `ADMIN_PASSWORD` khỏi `.env`.
+
+## Lượt dùng
+
+Server đếm mỗi lần Claude gọi một tool: theo **ngày (UTC)** và **tên tool**, gồm số lượt và số lỗi, giữ 30 ngày. Xem ở bảng *Lượt dùng 30 ngày* trên `/account` và trên trang admin.
+Chỉ có tên tool và hai con số: không ghi tài khoản, kết nối, token, vùng ô, dữ liệu, câu tìm kiếm, mã hay nội dung lỗi.
+Bộ đếm gom trong bộ nhớ và ghi vào trạng thái mỗi 60 giây và khi tắt server, nên nếu server sập đột ngột có thể mất tối đa một phút số liệu.
+
 ## Public qua tunnel
 
 Chỉ cổng **8787** được phép public (gồm `/mcp`, OAuth, `/account`, `/healthz`). Trang admin **8788** chỉ bind `127.0.0.1`.
-Vì `/account` và trang cấp quyền nằm trên cổng public, chỉ những tài khoản có trên server (chủ sở hữu và người được mời) mới kết nối được Claude.
+Vì `/account` và trang cấp quyền nằm trên cổng public, chỉ chủ sở hữu (đăng nhập bằng tài khoản trên server) mới kết nối được Claude.
 
 Cách dùng Cloudflare named tunnel (URL cố định):
 
@@ -183,8 +220,8 @@ Ba lớp credential độc lập, lộ một lớp không lộ lớp khác:
 
 | Lớp | Cơ chế |
 |---|---|
-| Claude → MCP | OAuth 2.1 + PKCE (DCR; trang cấp quyền yêu cầu đăng nhập tài khoản trên server và chọn kết nối của chính bạn; access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Grant, token và PAT gắn với `{người dùng, kết nối}`: mỗi lệnh gọi chỉ đi tới kết nối đó, không bao giờ lấy từ tham số của tool. Scope `sheets.read` / `sheets.write` (và `script.eval`, chỉ khi xin rõ ràng). Chỉ lưu hash. Không đặt token trong URL. |
-| Tài khoản (`/account`, cổng public) | Mật khẩu scrypt, cookie session `HttpOnly; SameSite=Lax` (+`Secure` khi base URL là https) chỉ lưu hash, CSRF token theo phiên, kiểm tra Origin, rate-limit 5 lần sai / 15 phút theo IP **và** theo tên đăng nhập, scrypt giả cho tên không tồn tại. Lời mời một lần, token nằm ở fragment URL. |
+| Claude → MCP | OAuth 2.1 + PKCE (DCR; trang cấp quyền yêu cầu đăng nhập tài khoản trên server và chọn kết nối của chính bạn; access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Grant, token và PAT gắn với `{tài khoản, kết nối}`: mỗi lệnh gọi chỉ đi tới kết nối đó, không bao giờ lấy từ tham số của tool. Scope `sheets.read` / `sheets.write` (và `script.eval`, chỉ khi xin rõ ràng). Chỉ lưu hash. Không đặt token trong URL. |
+| Tài khoản (`/account`, cổng public) | Mật khẩu scrypt, cookie session `HttpOnly; SameSite=Lax` (+`Secure` khi base URL là https) chỉ lưu hash, CSRF token theo phiên, kiểm tra Origin, rate-limit 5 lần sai / 15 phút theo IP **và** theo tên đăng nhập, scrypt giả cho tên không tồn tại. |
 | Trang admin | Chủ sở hữu, chỉ loopback, setup token một lần, mật khẩu scrypt, cookie session HttpOnly/SameSite=Strict, CSRF token, kiểm tra Host/Origin, rate-limit. |
 | MCP → Apps Script | HMAC-SHA256 trên mọi request (timestamp ±5 phút, nonce chống replay), response cũng được ký. Secret được tạo lúc pairing và không bao giờ hiển thị. |
 | Apps Script → Sheets | Quyền Google của chính bạn. Allowlist kiểm tra *trước khi* mở file, và quyền ghi tách riêng cho từng file. |

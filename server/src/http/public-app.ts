@@ -13,6 +13,7 @@ import { nullLogger } from "../log.js";
 import { createMcpServer } from "../mcp/server.js";
 import type { PublicBaseUrl } from "../settings/public-base-url.js";
 import { sha256Hex } from "../util/crypto.js";
+import type { UsageService } from "../usage/usage-service.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
 import { FixedWindowLimiter } from "../util/rate-limit.js";
 import { createAccountRouter } from "./account-app.js";
@@ -23,6 +24,7 @@ export interface PublicAppDeps {
   accounts: AccountService;
   registry: ConnectionRegistry;
   pats: PatService;
+  usage: UsageService;
   /** Shared per-IP login failure counter (5 / 15 min). */
   ipLimiter: FailureLimiter;
   /** When true, the run_apps_script tool is registered (still needs the script.eval scope). */
@@ -53,7 +55,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
     res.json({ ok: true });
   });
 
-  // ---- /account: login, invites, connections, PATs (does not need the OAuth issuer to be configured) ----
+  // ---- /account: login, connections, PATs, usage (does not need the OAuth issuer to be configured) ----
   app.use(
     "/account",
     createAccountRouter({
@@ -63,6 +65,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
       provider: deps.provider,
       baseUrl: () => deps.baseUrl.get(),
       ipLimiter: deps.ipLimiter,
+      usage: deps.usage,
       logger: log,
       indexHtml: deps.accountIndexHtml,
     }),
@@ -164,7 +167,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
   };
 
   app.post("/mcp", bearer, rateLimit, express.json({ limit: "8mb" }), async (req, res) => {
-    const server = createMcpServer(deps.registry.resolve, log, deps.evaluatorAvailable);
+    const server = createMcpServer(deps.registry.resolve, log, deps.evaluatorAvailable, deps.usage);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

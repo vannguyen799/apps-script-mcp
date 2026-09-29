@@ -19,6 +19,27 @@ services:
         required: false
     environment:
       DATA_DIR: /data
+      # Optional PostgreSQL instead of the JSON file in /data (start it with:  docker compose --profile postgres up -d).
+      # One server instance per database. The first start imports an existing /data/state.json once.
+      # DATABASE_URL: postgres://asmcp:${POSTGRES_PASSWORD:-change-me}@postgres:5432/asmcp
+
+  # Optional PostgreSQL for the server state (profile "postgres"). Not published on the host: only the compose network reaches it.
+  # Set POSTGRES_PASSWORD in .env, and uncomment DATABASE_URL above (or put it in .env).
+  postgres:
+    image: postgres:17-alpine
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: asmcp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: asmcp
+    volumes:
+      - asmcp-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asmcp -d asmcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Named Cloudflare tunnel -> http://apps-script-mcp:8787. Start with:  docker compose --profile tunnel up -d
   # Configure the tunnel's public hostname in the Cloudflare Zero Trust dashboard to point at http://apps-script-mcp:8787,
@@ -43,3 +64,4 @@ services:
 
 volumes:
   asmcp-data:
+  asmcp-pg:
