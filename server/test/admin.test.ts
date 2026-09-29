@@ -162,6 +162,7 @@ describe("admin API security", () => {
     expect(html).toContain(`<script nonce="${nonce}">`);
     expect(html).not.toContain("{{NONCE}}");
     expect(csp).not.toContain("unsafe-inline");
+    expect(html).not.toMatch(/\sstyle=/); // blocked by style-src (no unsafe-inline)
     expect(html).toMatch(/id="login-user"[^>]*value="admin"/);
     expect(html).not.toMatch(/setup-token|form-setup|#setup=/);
     expect(html).toContain('id="form-pw"');

@@ -77,7 +77,7 @@ export function renderConsentPage(v: ConsentView): string {
 <title>Cấp quyền truy cập</title>
 <style nonce="${escapeHtml(v.styleNonce)}">
 body{font:16px/1.5 system-ui,sans-serif;background:#f4f5f7;color:#1c1e21;margin:0;display:grid;place-items:center;min-height:100vh}
-main{background:#fff;max-width:460px;width:calc(100% - 32px);padding:28px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.1);margin:16px 0}
+main{box-sizing:border-box;background:#fff;max-width:460px;width:calc(100% - 32px);padding:28px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.1);margin:16px 0}
 h1{font-size:20px;margin:0 0 12px}h2{font-size:16px;margin:18px 0 6px}ul{padding-left:20px}code{background:#eef;padding:1px 5px;border-radius:4px}
 label{display:block;margin:12px 0 4px;font-weight:600}input:not([type=radio]):not([type=hidden]){width:100%;box-sizing:border-box;padding:10px;font-size:16px;border:1px solid #9aa0a6;border-radius:6px}
 label.opt{display:flex;gap:10px;align-items:flex-start;font-weight:400;border:1px solid #dadce0;border-radius:8px;padding:8px 10px;margin:6px 0}.muted{color:#5f6368;font-size:14px}

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <title>apps-script-mcp - Tài khoản</title>
 <style nonce="{{NONCE}}">
 :root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--muted:#5f6368;--line:#dadce0;--pri:#1a73e8;--ok:#188038;--warn:#b06000;--err:#b3261e}
@@ -26,7 +27,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .badge{display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}
 .b-connected{background:var(--ok)}.b-error{background:var(--err)}
 .code{font:700 36px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;background:#eef3fd;border-radius:8px;padding:10px 18px;display:inline-block}
-table{width:100%;border-collapse:collapse;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px;display:block;overflow-x:auto}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 pre,.mono,textarea{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 textarea{width:100%;height:140px;border:1px solid var(--line);resize:vertical}
@@ -39,12 +40,15 @@ textarea{width:100%;height:140px;border:1px solid var(--line);resize:vertical}
 .opt{border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-top:12px}
 ol{padding-left:20px;margin:6px 0}
 .lbl{display:flex;gap:6px;align-items:center}.lbl input{flex:1}
+code{overflow-wrap:anywhere}
+.card .flush{margin-top:0}.row.flush{margin:0}
+.lbl.plain{font-weight:400}.lbl input[type=checkbox]{flex:none}.scopes{margin-top:8px}
 </style>
 </head>
 <body>
 <header>
   <h1>apps-script-mcp</h1>
-  <div id="hdr-actions" class="hidden row" style="margin:0">
+  <div id="hdr-actions" class="hidden row flush">
     <span class="muted">Đăng nhập: <strong id="who"></strong></span>
     <button id="btn-logout" type="button">Đăng xuất</button>
     <button id="btn-logout-all" type="button">Đăng xuất mọi nơi</button>
@@ -77,10 +81,10 @@ ol{padding-left:20px;margin:6px 0}
       <h2>Thêm Apps Script</h2>
 
       <div id="step1">
-        <h3 style="margin-top:0">Bước 1: Kết nối Google</h3>
+        <h3 class="flush">Bước 1: Kết nối Google</h3>
         <label for="sheets-text">Link các Google Sheet muốn dùng (mỗi dòng một link, có thể để trống)</label>
         <textarea id="sheets-text" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/.../edit"></textarea>
-        <label class="lbl" style="font-weight:400"><input type="checkbox" id="sheets-write" checked style="flex:none"> Cho phép Claude ghi dữ liệu</label>
+        <label class="lbl plain"><input type="checkbox" id="sheets-write" checked> Cho phép Claude ghi dữ liệu</label>
         <div id="step1-msg" class="msg err hidden"></div>
         <div class="row"><button id="btn-step1" class="primary" type="button">Tiếp tục</button><button id="btn-step1-cancel" type="button">Hủy</button></div>
       </div>
@@ -90,7 +94,7 @@ ol{padding-left:20px;margin:6px 0}
       <p class="muted">Phiên này hết hạn sau <strong id="add-left">30:00</strong>.</p>
 
       <div id="opt-new" class="opt">
-        <h3 style="margin-top:0">Cách 1: Script mới (dán một file, không cần nhập mã)</h3>
+        <h3 class="flush">Cách 1: Script mới (dán một file, không cần nhập mã)</h3>
         <ol>
           <li>Tải hoặc copy file <code>Code.gs</code> đã được cá nhân hóa cho bạn:
             <div class="row"><a id="btn-download" class="btn" href="#" download="Code.gs">Tải Code.gs</a><button id="btn-copy-bundle" type="button">Copy Code.gs</button><button id="btn-show-bundle" type="button">Hiện nội dung</button></div>
@@ -106,8 +110,8 @@ ol{padding-left:20px;margin:6px 0}
       </div>
 
       <div id="opt-code" class="opt">
-        <h3 style="margin-top:0">Cách 2: Script đã cài sẵn (dùng mã ghép cặp)</h3>
-        <p class="muted" style="margin-top:0">Dành cho script đã có bản Code.gs mới. Dán URL web app, rồi nhập mã hiện ra vào trang quản trị của script.</p>
+        <h3 class="flush">Cách 2: Script đã cài sẵn (dùng mã ghép cặp)</h3>
+        <p class="muted flush">Dành cho script đã có bản Code.gs mới. Dán URL web app, rồi nhập mã hiện ra vào trang quản trị của script.</p>
         <input id="url-code" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" aria-label="URL web app">
         <div class="row"><button id="btn-url-code" type="button">Tạo mã ghép cặp</button></div>
         <div id="code-box" class="hidden">
@@ -120,7 +124,7 @@ ol{padding-left:20px;margin:6px 0}
       <div id="done-box" class="msg ok hidden"></div>
 
       <div id="step2" class="opt hidden">
-        <h3 style="margin-top:0">Bước 2: Kết nối Claude</h3>
+        <h3 class="flush">Bước 2: Kết nối Claude</h3>
         <div id="s2-url-box" class="hidden">
           <p><strong>claude.ai:</strong> Settings &rarr; Connectors &rarr; Add custom connector, dán URL:</p>
           <div class="mono" id="s2-url"></div>
@@ -133,8 +137,9 @@ ol{padding-left:20px;margin:6px 0}
           <div class="row"><button id="btn-copy-s2-cmd" type="button">Copy</button></div>
         </div>
       </div>
-      <div class="row"><a id="btn-back-consent" class="btn primary hidden" href="#">Quay lại cấp quyền</a><button id="btn-add-cancel" type="button">Đóng</button></div>
+      <div class="row"><button id="btn-add-cancel" type="button">Đóng</button></div>
       </div>
+      <div class="row"><a id="btn-back-consent" class="btn primary hidden" href="#">Quay lại cấp quyền</a></div>
     </section>
 
     <section class="card">
@@ -145,7 +150,7 @@ ol{padding-left:20px;margin:6px 0}
         <input id="pat-label" type="text" maxlength="64" placeholder="Claude Code trên laptop" required>
         <label for="pat-conn">Kết nối Apps Script</label>
         <select id="pat-conn" required></select>
-        <div class="scopes" style="margin-top:8px">
+        <div class="scopes">
           <label><input type="checkbox" id="pat-read" checked> sheets.read</label>
           <label><input type="checkbox" id="pat-write"> sheets.write</label>
           <label class="danger-text"><input type="checkbox" id="pat-eval"> script.eval</label>
@@ -288,11 +293,17 @@ function refreshConns() {
 /* ---------- add an Apps Script ---------- */
 function stopAdd() { clearInterval(pendingTimer); clearInterval(addLeftTimer); pendingTimer = null; }
 
+/* Link back to the OAuth consent page when this page was opened from it (only useful once there is a connection to pick). */
+function backToConsent(on) {
+  if (!consentNonce || !on) { show("btn-back-consent", false); return; }
+  $("btn-back-consent").setAttribute("href", "/oauth/consent?nonce=" + encodeURIComponent(consentNonce)); show("btn-back-consent", true);
+}
+
 /* Step 1 (DESIGN.md 12): nothing is created on the server until the user continues. */
 function startAdd() {
   notice(""); stopAdd(); pendingId = null;
   show("add-card", true); show("step1", true); show("step-flow", false); show("step2", false);
-  show("done-box", false); show("wait-box", false); show("code-box", false); show("btn-back-consent", false); box("add-msg", ""); box("step1-msg", "");
+  show("done-box", false); show("wait-box", false); show("code-box", false); backToConsent(!!connections.length); box("add-msg", ""); box("step1-msg", "");
   show("opt-new", !!(me && me.setupAvailable)); show("opt-code", true);
   $("bundle-text").classList.add("hidden"); $("url-new").value = ""; $("url-code").value = "";
   $("add-card").scrollIntoView();
@@ -342,7 +353,7 @@ function applyPending(p) {
     box("wait-box", "");
     show("opt-new", false); show("opt-code", false);
     showStep2(p.pat);
-    if (consentNonce) { $("btn-back-consent").setAttribute("href", "/oauth/consent?nonce=" + encodeURIComponent(consentNonce)); show("btn-back-consent", true); }
+    backToConsent(true);
     pendingId = null; refreshConns();
   } else if (p.state === "failed" || p.state === "expired") {
     stopAdd(); pendingId = null;
@@ -368,6 +379,7 @@ function refreshPats() {
   return api("GET", "/account/api/pats").then(function (r) {
     var labels = {}; connections.forEach(function (c) { labels[c.id] = c.label; });
     var tb = $("pat-list"); clear(tb);
+    if (!r.pats.length) { var tr0 = document.createElement("tr"); var c0 = td("Chưa có PAT nào."); c0.colSpan = 6; tr0.appendChild(c0); tb.appendChild(tr0); }
     r.pats.forEach(function (p) {
       var tr = document.createElement("tr");
       tr.appendChild(td(p.label + " (" + p.hint + "…)")); tr.appendChild(td(labels[p.connectionId] || "(đã xóa)")); tr.appendChild(td(p.scopes.join(", "))); tr.appendChild(td(fmt(p.createdAt))); tr.appendChild(td(fmt(p.lastUsedAt)));

@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <title>apps-script-mcp - Quản trị</title>
 <style nonce="{{NONCE}}">
 :root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--muted:#5f6368;--line:#dadce0;--pri:#1a73e8;--ok:#188038;--warn:#b06000;--err:#b3261e}
@@ -25,7 +26,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;color:#fff}
 .b-not_connected{background:#80868b}.b-pairing_pending{background:var(--warn)}.b-connected{background:var(--ok)}.b-error{background:var(--err)}
 .code{font:700 40px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;background:#eef3fd;border-radius:8px;padding:10px 18px;display:inline-block}
-table{width:100%;border-collapse:collapse;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:14px;display:block;overflow-x:auto}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 .msg{margin-top:10px;padding:8px 10px;border-radius:6px;font-size:14px}
@@ -39,6 +40,8 @@ pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4
 textarea{width:100%;height:140px;border:1px solid var(--line);resize:vertical;font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4;border-radius:6px;padding:8px 10px}
 ol{padding-left:20px;margin:6px 0}
 select{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;font:inherit;background:#fff}
+code{overflow-wrap:anywhere}
+.card .flush{margin-top:0}
 </style>
 </head>
 <body>
@@ -90,7 +93,7 @@ select{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;fo
       <p class="muted">Phiên này hết hạn sau <strong id="add-left">30:00</strong>.</p>
 
       <div id="opt-new" class="opt">
-        <h3 style="margin-top:0">Cách 1: Script mới (dán một file, không cần nhập mã)</h3>
+        <h3 class="flush">Cách 1: Script mới (dán một file, không cần nhập mã)</h3>
         <ol>
           <li>Tải hoặc copy file <code>Code.gs</code> đã được cá nhân hóa cho bạn:
             <div class="row"><a id="btn-download" class="btn" href="#" download="Code.gs">Tải Code.gs</a><button id="btn-copy-bundle" type="button">Copy Code.gs</button><button id="btn-show-bundle" type="button">Hiện nội dung</button></div>
@@ -106,8 +109,8 @@ select{width:100%;padding:9px 10px;border:1px solid #9aa0a6;border-radius:6px;fo
       </div>
 
       <div class="opt">
-        <h3 style="margin-top:0">Cách 2: Script đã cài sẵn (dùng mã ghép cặp)</h3>
-        <p class="muted" style="margin-top:0">Dành cho script đã có bản Code.gs mới. Dán URL web app, rồi nhập mã hiện ra vào trang quản trị của script.</p>
+        <h3 class="flush">Cách 2: Script đã cài sẵn (dùng mã ghép cặp)</h3>
+        <p class="muted flush">Dành cho script đã có bản Code.gs mới. Dán URL web app, rồi nhập mã hiện ra vào trang quản trị của script.</p>
         <input id="url-code" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" aria-label="URL web app">
         <div class="row"><button id="btn-url-code" type="button">Tạo mã ghép cặp</button></div>
         <div id="code-box" class="hidden">

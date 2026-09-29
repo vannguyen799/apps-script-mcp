@@ -265,6 +265,7 @@ describe("/account pages", () => {
       expect(html).toContain(`<style nonce="${nonce}">`);
       expect(html).not.toContain("{{NONCE}}");
       expect(csp).not.toContain("unsafe-inline");
+      expect(html).not.toMatch(/\sstyle=/); // blocked by style-src (no unsafe-inline)
       expect(csp).toContain("default-src 'none'");
       expect(csp).toContain("frame-ancestors 'none'");
       expect(html).toContain("Đăng nhập");
