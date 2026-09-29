@@ -164,15 +164,18 @@ export class AccountService {
     const userKey = `user:${name}`;
     const wait = Math.max(this.deps.ipLimiter.blockedFor(ipKey), this.deps.userLimiter.blockedFor(userKey));
     if (wait > 0) throw new AccountError("RATE_LIMITED", "Thử sai quá nhiều lần. Hãy thử lại sau.", wait);
+    // Count the attempt before the (async) password check, in the same synchronous step as the check above, so that
+    // concurrent attempts cannot all pass it before any failure is recorded. A success withdraws it again.
+    this.deps.ipLimiter.recordFailure(ipKey);
+    this.deps.userLimiter.recordFailure(userKey);
 
     const user = normalizeUsername(name) ? this.findByUsername(name) : undefined;
     const pw = typeof password === "string" ? password : "";
     const ok = user ? await verifyPasswordHash(pw, user.passwordHash) : await verifyAgainstDummy(pw);
     if (!user || !ok || (opts.requireRole && user.role !== opts.requireRole)) {
-      this.deps.ipLimiter.recordFailure(ipKey);
-      this.deps.userLimiter.recordFailure(userKey);
       throw new AccountError("BAD_CREDENTIALS", "Tên đăng nhập hoặc mật khẩu không đúng.");
     }
+    this.deps.ipLimiter.forgive(ipKey);
     this.deps.userLimiter.reset(userKey);
     return user;
   }

@@ -122,6 +122,20 @@ describe("public login", () => {
     }
   });
 
+  it("concurrent attempts cannot outrun the limit: at most 5 password checks, the rest are RATE_LIMITED", async () => {
+    const { accounts, dir } = await accountsWith();
+    try {
+      const rs = await Promise.allSettled(Array.from({ length: 20 }, (_, i) => accounts.login("boss", `wrong-wrong-${i}`, "1.2.3.4")));
+      const codes = rs.map((r) => (r.status === "rejected" ? (r.reason as { code: string }).code : "OK"));
+      expect(codes.filter((c) => c === "BAD_CREDENTIALS")).toHaveLength(5);
+      expect(codes.filter((c) => c === "RATE_LIMITED")).toHaveLength(15);
+      await expect(accounts.login("boss", "boss-password-1", "5.6.7.8")).rejects.toMatchObject({ code: "RATE_LIMITED" }); // username blocked too
+    } finally {
+      const { rm } = await import("node:fs/promises");
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("per-IP limit spans usernames; the window expires; a success resets the username counter only", async () => {
     let t = 1_000_000;
     const { accounts, dir } = await accountsWith(() => t, 5, 5);

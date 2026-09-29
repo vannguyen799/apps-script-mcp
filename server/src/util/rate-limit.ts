@@ -55,6 +55,12 @@ export class FailureLimiter {
     else e.count += 1;
   }
 
+  /** Withdraws one failure recorded for an attempt that turned out to succeed. */
+  forgive(key: string): void {
+    const e = this.failures.get(key);
+    if (e && e.resetAt > this.now() && e.count > 0) e.count -= 1;
+  }
+
   reset(key: string): void {
     this.failures.delete(key);
   }
