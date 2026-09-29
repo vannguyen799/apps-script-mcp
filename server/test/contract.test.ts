@@ -1,7 +1,10 @@
 // Cross-implementation contract test: the real server adapter talks to the real Apps Script code
 // (apps-script/src, loaded by apps-script/test/harness.js) through an in-memory transport.
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { AppsScriptClient } from "../src/adapters/apps-script/client.js";
 import { AppsScriptGateway } from "../src/adapters/apps-script/gateway.js";
 import { attemptPair, formatPairingCode, generatePairingCode } from "../src/adapters/apps-script/pairing.js";
@@ -9,6 +12,9 @@ import type { FetchLike } from "../src/adapters/apps-script/transport.js";
 import { GatewayError } from "../src/core/sheets/gateway.js";
 import { SheetsService } from "../src/core/sheets/sheets.service.js";
 import { newSecret } from "../src/adapters/apps-script/signing.js";
+import { setupLineCount } from "../src/connection/setup-bundle.js";
+import type { Harness } from "./helpers.js";
+import { fullOAuth, makeHarness } from "./helpers.js";
 
 const require = createRequire(import.meta.url);
 const { createSandbox } = require("../../apps-script/test/harness.js");
@@ -33,7 +39,7 @@ async function pairedSetup(tamper?: (envelope: any) => any) {
 
   expect(await attemptPair(pairParams)).toEqual({ status: "not_ready" });
   sb.enterPairingCode(formatPairingCode(code).toLowerCase());
-  expect(await attemptPair(pairParams)).toEqual({ status: "paired", account: "owner@example.com" });
+  expect(await attemptPair(pairParams)).toMatchObject({ status: "paired", account: "owner@example.com", scriptId: expect.any(String) });
 
   const client = new AppsScriptClient({ url: URL, instanceId: INSTANCE, secret, fetchImpl: wire(sb, tamper), now });
   const service = new SheetsService(new AppsScriptGateway(client), { now });
@@ -168,5 +174,157 @@ describe("server adapter <-> Apps Script contract", () => {
       sb.ctx.admin_setEvalEnabled(true);
       await expect(new AppsScriptGateway(client).evaluate("return 42;")).rejects.toThrow(/invalid signature/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// DESIGN.md section 9: accounts, several connections, one-paste setup, against the real Apps Script code.
+// ---------------------------------------------------------------------------------------------------------------
+const REAL_BUNDLE = readFileSync(new globalThis.URL("../../apps-script/Code.gs", import.meta.url), "utf8");
+
+describe("section 9 against the real Apps Script code", () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  /** Routes each web app URL to its own in-memory script. */
+  const scripts = new Map<string, any>();
+  const routing = (async (url: string, init: RequestInit) => {
+    const sb = scripts.get(String(url));
+    if (!sb) return new Response("not found", { status: 404 });
+    return new Response(JSON.stringify(sb.doPost(String(init.body))), { status: 200 });
+  }) as unknown as FetchLike;
+  const newScript = (url: string, scriptId: string, email = "owner@example.com") => {
+    const sb = createSandbox({ now: Date.now(), scriptId, activeEmail: email, effectiveEmail: email, webAppUrl: url });
+    scripts.set(url, sb);
+    return sb;
+  };
+  const setupBlockOf = (text: string) => JSON.parse(/^var ASMCP_SETUP_ = (.*);$/m.exec(text)![1]!);
+
+  /** The user pastes the personalised Code.gs (the sandbox gets its ASMCP_SETUP_ block), deploys, pastes the URL. */
+  async function connectViaSetup(harness: Harness, userId: string, sb: any, url: string) {
+    const p = await harness.registry.startPending(userId);
+    sb.setSetup(setupBlockOf(harness.registry.personalizedBundle(p.id, userId)));
+    await harness.registry.submitUrl(p.id, userId, url, "setup");
+    await harness.registry.pollOnce();
+    return harness.registry.getPending(p.id, userId)!;
+  }
+
+  async function mcp(base: string, token: string): Promise<Client> {
+    const c = new Client({ name: "t", version: "1" });
+    await c.connect(new StreamableHTTPClientTransport(new globalThis.URL(`${base}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+    return c;
+  }
+  const text = (r: unknown): string => ((r as { content: Array<{ text: string }> }).content[0] as { text: string }).text;
+
+  it("the shipped Code.gs carries the placeholder line exactly once", () => {
+    expect(setupLineCount(REAL_BUNDLE)).toBe(1);
+  });
+
+  it("setup pair: the personalised Code.gs pairs with no code, and the script marks the token consumed", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const url = "https://script.google.com/macros/s/SETUPA/exec";
+    const sb = newScript(url, "SCRIPT-A");
+    const done = await connectViaSetup(h, h.ownerId, sb, url);
+    expect(done).toMatchObject({ state: "connected", updated: false });
+    expect(done.connection).toMatchObject({ account: "owner@example.com", scriptId: "SCRIPT-A", url, state: "connected" });
+
+    // Calls now work through the registry against the real script.
+    sb.addSpreadsheet({ id: "sales-id", name: "Sales", alias: "sales", access: "write", sheets: { S: [["a", 1]] } });
+    const rt = h.registry.resolve(done.connection!.id, h.ownerId)!;
+    expect((await rt.service.listSpreadsheets()).map((x) => x.alias)).toEqual(["sales"]);
+
+    // The token is burned on the script side: a second connection attempt with the same block cannot pair.
+    const p2 = await h.registry.startPending(h.ownerId);
+    sb.setSetup(sb.ctx.ASMCP_SETUP_); // same block again
+    await h.registry.submitUrl(p2.id, h.ownerId, url, "setup");
+    await h.registry.pollOnce();
+    expect(h.registry.getPending(p2.id, h.ownerId)).toMatchObject({ state: "failed" }); // proof is for p2's token, not the block's
+  });
+
+  it("code pairing with an already-installed script still works through the registry", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const url = "https://script.google.com/macros/s/CODEA/exec";
+    const sb = newScript(url, "SCRIPT-CODE");
+    const p = await h.registry.startPending(h.ownerId);
+    const shown = (await h.registry.submitUrl(p.id, h.ownerId, url, "code")).code!;
+    await h.registry.pollOnce();
+    expect(h.registry.getPending(p.id, h.ownerId)!.state).toBe("waiting_script");
+    sb.enterPairingCode(shown);
+    await h.registry.pollOnce();
+    expect(h.registry.getPending(p.id, h.ownerId)).toMatchObject({ state: "connected", connection: { scriptId: "SCRIPT-CODE" } });
+  });
+
+  it("re-pairing the same script (new deployment URL) keeps the connectionId, and the old OAuth token and PAT still work", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const url1 = "https://script.google.com/macros/s/DEPLOY1/exec";
+    const url2 = "https://script.google.com/macros/s/DEPLOY2/exec";
+    const sb = newScript(url1, "SCRIPT-A");
+    scripts.set(url2, sb); // same project, a new deployment
+    sb.addSpreadsheet({ id: "sales-id", name: "Sales", alias: "sales", access: "read", sheets: { S: [["a", 1]] } });
+
+    const first = await connectViaSetup(h, h.ownerId, sb, url1);
+    const connectionId = first.connection!.id;
+    const { tokens } = await fullOAuth(h, "sheets.read", { username: h.username, password: h.password });
+    const { token: pat } = await h.pats.create(h.ownerId, connectionId, "cli", ["sheets.read"]);
+    const before = { ...h.registry.get(connectionId)! };
+
+    scripts.delete(url1); // the old deployment is gone
+    const second = await connectViaSetup(h, h.ownerId, sb, url2);
+    expect(second).toMatchObject({ state: "connected", updated: true });
+    expect(second.connection!.id).toBe(connectionId);
+    const after = h.registry.get(connectionId)!;
+    expect(after.url).toBe(url2);
+    expect(after.instanceId).not.toBe(before.instanceId);
+    expect(after.secret).not.toBe(before.secret);
+    expect(h.registry.listFor(h.ownerId)).toHaveLength(1);
+
+    for (const token of [tokens.access_token, pat]) {
+      const c = await mcp(h.publicUrl, token);
+      const r = await c.callTool({ name: "list_spreadsheets", arguments: {} });
+      expect(r.isError, text(r)).toBeFalsy();
+      expect(JSON.parse(text(r)).spreadsheets.map((x: any) => x.alias)).toEqual(["sales"]);
+      await c.close();
+    }
+  });
+
+  it("two connections to two scripts are isolated: each token only ever reaches its own script", async () => {
+    h = await makeHarness({ bundle: REAL_BUNDLE, fetchImpl: routing, realGateways: true, connection: false });
+    const mary = await h.addMember("mary", "mary-password-1");
+    const urlA = "https://script.google.com/macros/s/ONE/exec";
+    const urlB = "https://script.google.com/macros/s/TWO/exec";
+    // Same Google account email on both scripts: the email is never a key.
+    const sbA = newScript(urlA, "SCRIPT-A", "same@example.com");
+    const sbB = newScript(urlB, "SCRIPT-B", "same@example.com");
+    sbA.addSpreadsheet({ id: "a-id", name: "Alpha book", alias: "alpha", access: "write", sheets: { S: [["from A"]] } });
+    sbB.addSpreadsheet({ id: "b-id", name: "Beta book", alias: "beta", access: "write", sheets: { S: [["from B"]] } });
+
+    const ca = await connectViaSetup(h, h.ownerId, sbA, urlA);
+    const cb = await connectViaSetup(h, mary.id, sbB, urlB);
+    expect(ca.connection!.id).not.toBe(cb.connection!.id);
+    expect(ca.connection!.account).toBe(cb.connection!.account);
+
+    const owner = await fullOAuth(h, "sheets.read sheets.write", { username: h.username, password: h.password });
+    const member = await fullOAuth(h, "sheets.read sheets.write", { username: "mary", password: mary.password });
+    const names = async (token: string) => {
+      const c = await mcp(h!.publicUrl, token);
+      const r = await c.callTool({ name: "list_spreadsheets", arguments: {} });
+      await c.close();
+      return JSON.parse(text(r)).spreadsheets.map((x: any) => x.alias);
+    };
+    expect(await names(owner.tokens.access_token)).toEqual(["alpha"]);
+    expect(await names(member.tokens.access_token)).toEqual(["beta"]);
+
+    // Writes land in the right script only.
+    const c = await mcp(h.publicUrl, member.tokens.access_token);
+    const w = await c.callTool({ name: "write_range", arguments: { spreadsheet: "beta", range: "S!A1", values: [["written by mary"]] } });
+    expect(w.isError, text(w)).toBeFalsy();
+    const cross = await c.callTool({ name: "read_range", arguments: { spreadsheet: "alpha", range: "S!A1" } });
+    expect(cross.isError).toBe(true); // A's spreadsheet does not exist on B's script
+    expect(sbA.sheetsFake.opened).not.toContain("b-id");
+    expect(sbB.sheetsFake.opened).not.toContain("a-id");
+    await c.close();
   });
 });

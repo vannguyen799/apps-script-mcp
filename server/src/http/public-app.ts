@@ -5,21 +5,30 @@ import express from "express";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import { CONSENT_PATH, GsmcpOAuthProvider } from "../auth/oauth-provider.js";
 import { ADVERTISED_SCOPES } from "../auth/scopes.js";
-import type { ScriptEvaluator } from "../core/script/evaluator.js";
-import type { SheetsService } from "../core/sheets/sheets.service.js";
+import type { AccountService } from "../auth/accounts.js";
+import type { PatService } from "../auth/pat.js";
+import type { ConnectionRegistry } from "../connection/connection-registry.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import { createMcpServer } from "../mcp/server.js";
 import type { PublicBaseUrl } from "../settings/public-base-url.js";
 import { sha256Hex } from "../util/crypto.js";
+import type { FailureLimiter } from "../util/rate-limit.js";
 import { FixedWindowLimiter } from "../util/rate-limit.js";
+import { createAccountRouter } from "./account-app.js";
 
 export interface PublicAppDeps {
   provider: GsmcpOAuthProvider;
   baseUrl: PublicBaseUrl;
-  service: SheetsService;
-  /** When present, the run_apps_script tool is registered (still needs the script.eval scope). */
-  evaluator?: ScriptEvaluator;
+  accounts: AccountService;
+  registry: ConnectionRegistry;
+  pats: PatService;
+  /** Shared per-IP login failure counter (5 / 15 min). */
+  ipLimiter: FailureLimiter;
+  /** When true, the run_apps_script tool is registered (still needs the script.eval scope). */
+  evaluatorAvailable?: boolean;
+  /** Overridable for tests. */
+  accountIndexHtml?: string;
   trustProxy: boolean | number | string;
   logger?: Logger;
   /** Requests per minute per token on /mcp (default 120). */
@@ -43,6 +52,21 @@ export function createPublicApp(deps: PublicAppDeps): Express {
   app.get("/healthz", (_req, res) => {
     res.json({ ok: true });
   });
+
+  // ---- /account: login, invites, connections, PATs (does not need the OAuth issuer to be configured) ----
+  app.use(
+    "/account",
+    createAccountRouter({
+      accounts: deps.accounts,
+      registry: deps.registry,
+      pats: deps.pats,
+      provider: deps.provider,
+      baseUrl: () => deps.baseUrl.get(),
+      ipLimiter: deps.ipLimiter,
+      logger: log,
+      indexHtml: deps.accountIndexHtml,
+    }),
+  );
 
   // ---- OAuth (router rebuilt when the base URL changes) -------------------
   let cached: { base: string; router: RequestHandler } | null = null;
@@ -70,8 +94,12 @@ export function createPublicApp(deps: PublicAppDeps): Express {
 
   const formParser = express.urlencoded({ extended: false, limit: "8kb" });
   const consent: RequestHandler = (req, res, next) => {
+    if (req.method === "GET") {
+      deps.provider.handleConsentGet(req, res).catch(next);
+      return;
+    }
     if (req.method !== "POST") {
-      res.set("Allow", "POST").status(405).json({ error: "method_not_allowed" });
+      res.set("Allow", "GET, POST").status(405).json({ error: "method_not_allowed" });
       return;
     }
     formParser(req, res, (err?: unknown) => {
@@ -136,7 +164,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
   };
 
   app.post("/mcp", bearer, rateLimit, express.json({ limit: "8mb" }), async (req, res) => {
-    const server = createMcpServer(deps.service, log, deps.evaluator);
+    const server = createMcpServer(deps.registry.resolve, log, deps.evaluatorAvailable);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

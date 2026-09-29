@@ -2,25 +2,30 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import express from "express";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
+import type { AccountService } from "../auth/accounts.js";
+import { AccountError } from "../auth/accounts.js";
 import type { AdminAuth, AdminSession } from "../auth/admin-auth.js";
-import { AdminAuthError } from "../auth/admin-auth.js";
 import type { GsmcpOAuthProvider } from "../auth/oauth-provider.js";
 import type { PatService } from "../auth/pat.js";
-import type { ConnectionManager } from "../connection/connection-manager.js";
-import { GatewayError } from "../core/sheets/gateway.js";
+import type { ConnectionRegistry } from "../connection/connection-registry.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import type { PublicBaseUrl } from "../settings/public-base-url.js";
 import { safeEqualStr } from "../util/crypto.js";
+import { parseCookies } from "../util/http.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
+import { mountPendingRoutes } from "./connection-api.js";
+import { HttpError, mapKnownError } from "./errors.js";
 
 export const COOKIE_NAME = "asmcp_admin";
 const DEFAULT_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 export interface AdminAppDeps {
   auth: AdminAuth;
+  accounts: AccountService;
+  /** Shared per-IP failure counter (login, setup). */
   limiter: FailureLimiter;
-  connection: ConnectionManager;
+  registry: ConnectionRegistry;
   baseUrl: PublicBaseUrl;
   pats: PatService;
   provider: GsmcpOAuthProvider;
@@ -29,16 +34,6 @@ export interface AdminAppDeps {
   logger?: Logger;
   /** Overridable for tests; defaults to the bundled admin-ui/index.html. */
   indexHtml?: string;
-}
-
-class HttpError extends Error {
-  constructor(
-    public readonly status: number,
-    public readonly code: string,
-    message: string,
-  ) {
-    super(message);
-  }
 }
 
 /** "Host: [::1]:8788" -> "[::1]"; "LOCALHOST:8788" -> "localhost". */
@@ -51,15 +46,6 @@ export function hostnameOf(hostHeader: string | undefined): string {
   }
   const i = h.lastIndexOf(":");
   return i < 0 ? h : h.slice(0, i);
-}
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of (header ?? "").split(";")) {
-    const i = part.indexOf("=");
-    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim();
-  }
-  return out;
 }
 
 type SessionRequest = Request & { session?: AdminSession };
@@ -143,9 +129,9 @@ export function createAdminApp(deps: AdminAppDeps): Express {
   const ipOf = (req: Request) => req.ip ?? "unknown";
   const body = (req: Request): Record<string, unknown> => (req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {});
 
-  const assertNotBlocked = (req: Request) => {
-    const wait = deps.limiter.blockedFor(ipOf(req));
-    if (wait > 0) throw new HttpError(429, "TOO_MANY_ATTEMPTS", `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minute(s).`);
+  const assertNotBlocked = (req: Request, scope: string) => {
+    const wait = deps.limiter.blockedFor(`${scope}:${ipOf(req)}`);
+    if (wait > 0) throw new HttpError(429, "TOO_MANY_ATTEMPTS", `Thử sai quá nhiều lần. Hãy thử lại sau ${Math.ceil(wait / 60)} phút.`, wait);
   };
 
   const wrap =
@@ -159,26 +145,25 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     "/session",
     wrap((req, res) => {
       const s = currentSession(req);
-      res.json({ setupRequired: deps.auth.needsSetup(), authenticated: !!s, csrfToken: s?.csrf ?? null });
+      const u = s ? deps.accounts.getUser(s.userId) : undefined;
+      const ok = !!s && u?.role === "owner";
+      res.json({ setupRequired: deps.accounts.needsSetup(), authenticated: ok, csrfToken: ok ? s!.csrf : null, username: ok ? u!.username : null });
     }),
   );
 
   api.post(
     "/setup",
     wrap(async (req, res) => {
-      assertNotBlocked(req);
-      const { setupToken, password } = body(req);
+      assertNotBlocked(req, "setup");
+      const { setupToken, username, password } = body(req);
       try {
-        const s = await deps.auth.completeSetup(String(setupToken ?? ""), String(password ?? ""));
-        deps.limiter.reset(ipOf(req));
+        const user = await deps.accounts.completeSetup(String(setupToken ?? ""), typeof username === "string" && username.trim() !== "" ? username : "admin", String(password ?? ""));
+        const s = deps.auth.createSession(user.id);
         setSessionCookie(req, res, s);
         log.info("admin_setup_completed");
         res.json({ ok: true, csrfToken: s.csrf });
       } catch (e) {
-        if (e instanceof AdminAuthError) {
-          if (e.code === "BAD_SETUP_TOKEN") deps.limiter.recordFailure(ipOf(req));
-          throw new HttpError(e.code === "ALREADY_SETUP" ? 409 : e.code === "BAD_SETUP_TOKEN" ? 401 : 400, e.code, e.message);
-        }
+        if (e instanceof AccountError && e.code === "BAD_SETUP_TOKEN") deps.limiter.recordFailure(`setup:${ipOf(req)}`);
         throw e;
       }
     }),
@@ -187,24 +172,24 @@ export function createAdminApp(deps: AdminAppDeps): Express {
   api.post(
     "/login",
     wrap(async (req, res) => {
-      assertNotBlocked(req);
-      if (deps.auth.needsSetup()) throw new HttpError(409, "SETUP_REQUIRED", "Complete first-run setup first.");
-      if (!(await deps.auth.verifyPassword(body(req).password))) {
-        deps.limiter.recordFailure(ipOf(req));
-        log.warn("admin_login_failed");
-        throw new HttpError(401, "BAD_CREDENTIALS", "Wrong password.");
+      if (deps.accounts.needsSetup()) throw new HttpError(409, "SETUP_REQUIRED", "Hãy hoàn tất thiết lập lần đầu trước.");
+      const { username, password } = body(req);
+      try {
+        const user = await deps.accounts.login(username, password, ipOf(req), { requireRole: "owner" });
+        const s = deps.auth.createSession(user.id);
+        setSessionCookie(req, res, s);
+        res.json({ ok: true, csrfToken: s.csrf });
+      } catch (e) {
+        if (e instanceof AccountError) log.warn("admin_login_failed", { resultCode: e.code });
+        throw e;
       }
-      deps.limiter.reset(ipOf(req));
-      const s = deps.auth.createSession();
-      setSessionCookie(req, res, s);
-      res.json({ ok: true, csrfToken: s.csrf });
     }),
   );
 
-  // ---- authenticated ----------------------------------------------------------
+  // ---- authenticated (owner) --------------------------------------------------------
   api.use((req: SessionRequest, _res, next) => {
     const s = currentSession(req);
-    if (!s) return next(new HttpError(401, "UNAUTHENTICATED", "Login required."));
+    if (!s || deps.accounts.getUser(s.userId)?.role !== "owner") return next(new HttpError(401, "UNAUTHENTICATED", "Cần đăng nhập."));
     req.session = s;
     if (req.method !== "GET" && req.method !== "HEAD") {
       const sent = req.headers["x-csrf-token"];
@@ -212,6 +197,7 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     }
     next();
   });
+  const ownerId = (req: Request): string => (req as SessionRequest).session!.userId;
 
   api.post(
     "/logout",
@@ -222,48 +208,19 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     }),
   );
 
-  const statusPayload = () => ({
-    connection: deps.connection.status(),
-    publicBaseUrl: { value: deps.baseUrl.get() ?? null, source: deps.baseUrl.source(), editable: deps.baseUrl.editable },
-    mcpEndpoint: deps.baseUrl.mcpEndpoint(),
-  });
+  const statusPayload = () => {
+    const base = deps.baseUrl.get() ?? null;
+    return {
+      publicBaseUrl: { value: base, source: deps.baseUrl.source(), editable: deps.baseUrl.editable },
+      mcpEndpoint: deps.baseUrl.mcpEndpoint(),
+      accountUrl: base ? `${base}/account` : null,
+      setupAvailable: deps.registry.setupAvailable,
+    };
+  };
 
   api.get("/status", (_req, res) => {
     res.json(statusPayload());
   });
-
-  api.post(
-    "/pairing/start",
-    wrap(async (req, res) => {
-      const st = await deps.connection.startPairing(String(body(req).url ?? ""));
-      res.json({ connection: st });
-    }),
-  );
-  api.post(
-    "/pairing/cancel",
-    wrap(async (_req, res) => {
-      res.json({ connection: await deps.connection.cancelPairing() });
-    }),
-  );
-  api.post(
-    "/connection/test",
-    wrap(async (_req, res) => {
-      res.json({ connection: await deps.connection.ping() });
-    }),
-  );
-  api.post(
-    "/connection/unpair",
-    wrap(async (_req, res) => {
-      res.json({ connection: await deps.connection.unpair() });
-    }),
-  );
-
-  api.get(
-    "/spreadsheets",
-    wrap(async (_req, res) => {
-      res.json({ spreadsheets: await deps.connection.gateway.listSpreadsheets() });
-    }),
-  );
 
   api.put(
     "/settings/public-base-url",
@@ -278,25 +235,71 @@ export function createAdminApp(deps: AdminAppDeps): Express {
     }),
   );
 
-  api.get("/pats", (_req, res) => {
-    res.json({ pats: deps.pats.list() });
+  // users + invites
+  api.get("/users", (_req, res) => {
+    const conns = deps.registry.listAll();
+    res.json({ users: deps.accounts.listUsers().map((u) => ({ ...u, connections: conns.filter((c) => c.userId === u.id).length })) });
+  });
+  api.delete(
+    "/users/:id",
+    wrap(async (req, res) => {
+      if (!(await deps.accounts.deleteMember(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy người dùng.");
+      res.json({ ok: true });
+    }),
+  );
+
+  api.get("/invites", (_req, res) => {
+    res.json({ invites: deps.accounts.listInvites() });
   });
   api.post(
-    "/pats",
+    "/invites",
     wrap(async (req, res) => {
-      const { label, scopes } = body(req);
-      try {
-        const { token, pat } = await deps.pats.create(String(label ?? ""), Array.isArray(scopes) ? (scopes as string[]) : []);
-        res.status(201).json({ token, pat }); // the only time the token is ever returned
-      } catch (e) {
-        throw new HttpError(400, "BAD_REQUEST", (e as Error).message);
-      }
+      const base = deps.baseUrl.get();
+      if (!base) throw new HttpError(409, "PUBLIC_BASE_URL_REQUIRED", "Hãy đặt Public base URL trước khi tạo lời mời.");
+      const { token, invite } = await deps.accounts.createInvite(ownerId(req));
+      // The token is only ever returned here, and only in the link's fragment so it stays out of server logs.
+      res.status(201).json({ invite, link: `${base}/account/invite#${token}` });
     }),
   );
   api.delete(
+    "/invites/:id",
+    wrap(async (req, res) => {
+      if (!(await deps.accounts.deleteInvite(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy lời mời.");
+      res.json({ ok: true });
+    }),
+  );
+
+  // connections: the owner sees and removes everyone's, and adds their own with the same flow as /account
+  api.get("/connections", (_req, res) => {
+    res.json({ connections: deps.registry.listAll() });
+  });
+  api.post(
+    "/connections/:id/test",
+    wrap(async (req, res) => {
+      const id = String(req.params.id);
+      if (!deps.registry.get(id)) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy kết nối.");
+      res.json({ connection: await deps.registry.ping(id) });
+    }),
+  );
+  api.delete(
+    "/connections/:id",
+    wrap(async (req, res) => {
+      if (!(await deps.registry.remove(String(req.params.id), null))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy kết nối.");
+      res.json({ ok: true });
+    }),
+  );
+  mountPendingRoutes(api, deps.registry, ownerId, wrap);
+
+  // PATs and grants of every user: list and revoke (PATs are created on /account)
+  api.get("/pats", (_req, res) => {
+    const users = new Map(deps.accounts.listUsers().map((u) => [u.id, u.username]));
+    const conns = new Map(deps.registry.listAll().map((c) => [c.id, c.label]));
+    res.json({ pats: deps.pats.list().map((p) => ({ ...p, username: users.get(p.userId) ?? null, connectionLabel: conns.get(p.connectionId) ?? null })) });
+  });
+  api.delete(
     "/pats/:id",
     wrap(async (req, res) => {
-      if (!(await deps.pats.revoke(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "No such token.");
+      if (!(await deps.pats.revoke(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy token.");
       res.json({ ok: true });
     }),
   );
@@ -307,7 +310,7 @@ export function createAdminApp(deps: AdminAppDeps): Express {
   api.delete(
     "/grants/:id",
     wrap(async (req, res) => {
-      if (!(await deps.provider.revokeGrant(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "No such grant.");
+      if (!(await deps.provider.revokeGrant(String(req.params.id)))) throw new HttpError(404, "NOT_FOUND", "Không tìm thấy grant.");
       res.json({ ok: true });
     }),
   );
@@ -318,19 +321,10 @@ export function createAdminApp(deps: AdminAppDeps): Express {
 
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) return next(err);
-    if (err instanceof HttpError) {
-      if (err.status === 429) res.set("Retry-After", "60");
-      res.status(err.status).json({ error: { code: err.code, message: err.message } });
-      return;
-    }
-    if (err instanceof GatewayError) {
-      const status = err.code === "BAD_REQUEST" ? 400 : err.code === "NOT_CONNECTED" ? 409 : 502;
-      res.status(status).json({ error: { code: err.code, message: err.message } });
-      return;
-    }
-    const st = (err as { status?: number }).status;
-    if (st === 400 || st === 413) {
-      res.status(st).json({ error: { code: "BAD_REQUEST", message: "Invalid request body." } });
+    const m = mapKnownError(err);
+    if (m) {
+      if (m.status === 429) res.set("Retry-After", String(m.retryAfterSec ?? 60));
+      res.status(m.status).json({ error: { code: m.code, message: m.message } });
       return;
     }
     log.error("admin_error", { reason: err instanceof Error ? err.name : "unknown" });

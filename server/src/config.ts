@@ -11,6 +11,8 @@ export interface Config {
   adminAllowedHosts: string[];
   logLevel: LogLevel;
   trustProxy: boolean | number | string;
+  /** The shipped single-file Apps Script bundle (Code.gs) that the personalised download is made from. */
+  appsScriptBundlePath: string;
 }
 
 function port(v: string | undefined, def: number, name: string): number {
@@ -50,5 +52,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       .filter(Boolean),
     logLevel: level as LogLevel,
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
+    appsScriptBundlePath: env.APPS_SCRIPT_BUNDLE_PATH && env.APPS_SCRIPT_BUNDLE_PATH.trim() !== "" ? env.APPS_SCRIPT_BUNDLE_PATH.trim() : "/app/apps-script/Code.gs",
   };
 }

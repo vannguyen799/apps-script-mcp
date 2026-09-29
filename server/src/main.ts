@@ -1,11 +1,12 @@
 import { hostname } from "node:os";
 import type { Server } from "node:http";
+import { AccountService } from "./auth/accounts.js";
 import { AdminAuth } from "./auth/admin-auth.js";
 import { GsmcpOAuthProvider } from "./auth/oauth-provider.js";
 import { PatService } from "./auth/pat.js";
 import { loadConfig } from "./config.js";
-import { ConnectionManager } from "./connection/connection-manager.js";
-import { SheetsService } from "./core/sheets/sheets.service.js";
+import { ConnectionRegistry } from "./connection/connection-registry.js";
+import { loadBundle } from "./connection/setup-bundle.js";
 import { createAdminApp } from "./http/admin-app.js";
 import { createPublicApp } from "./http/public-app.js";
 import { createLogger } from "./log.js";
@@ -20,21 +21,39 @@ async function main(): Promise<void> {
   const store = new StateStore(config.dataDir, log);
   await store.load();
 
-  const limiter = new FailureLimiter(5, 15 * 60_000); // shared by admin login and the OAuth consent page
-  const admin = new AdminAuth(store);
+  const ipLimiter = new FailureLimiter(5, 15 * 60_000); // login / setup / invite failures per IP (admin UI, /account, consent)
+  const userLimiter = new FailureLimiter(5, 15 * 60_000); // login failures per username
+  const accounts = new AccountService({ store, ipLimiter, userLimiter });
+  const admin = new AdminAuth();
   const pats = new PatService(store);
   const baseUrl = new PublicBaseUrl(config.publicBaseUrl, store);
-  const provider = new GsmcpOAuthProvider({ store, admin, limiter, pats, baseUrl: () => baseUrl.get(), logger: log });
+  const bundle = await loadBundle(config.appsScriptBundlePath, log);
 
-  const connection = new ConnectionManager({ store, logger: log, instanceLabel: `apps-script-mcp@${hostname()}` });
-  const service = new SheetsService(connection.gateway);
-  connection.onChange(() => service.invalidate());
+  const registry = new ConnectionRegistry({
+    store,
+    logger: log,
+    instanceLabel: `apps-script-mcp@${hostname()}`,
+    bundle,
+    baseUrl: () => baseUrl.get(),
+  });
+  const provider = new GsmcpOAuthProvider({ store, accounts, connections: registry, pats, baseUrl: () => baseUrl.get(), logger: log });
 
-  const publicApp = createPublicApp({ provider, baseUrl, service, evaluator: connection.evaluator, trustProxy: config.trustProxy, logger: log });
+  const publicApp = createPublicApp({
+    provider,
+    baseUrl,
+    accounts,
+    registry,
+    pats,
+    ipLimiter,
+    evaluatorAvailable: true,
+    trustProxy: config.trustProxy,
+    logger: log,
+  });
   const adminApp = createAdminApp({
     auth: admin,
-    limiter,
-    connection,
+    accounts,
+    limiter: ipLimiter,
+    registry,
     baseUrl,
     pats,
     provider,
@@ -43,7 +62,7 @@ async function main(): Promise<void> {
     logger: log,
   });
 
-  const setupToken = await admin.ensureSetupToken();
+  const setupToken = await accounts.ensureSetupToken();
   if (setupToken) {
     // Deliberately bypasses the logger: printed once, to stdout only.
     process.stdout.write(`Setup token: ${setupToken}\n`);
@@ -53,10 +72,10 @@ async function main(): Promise<void> {
     publicApp.listen(config.portPublic, () => log.info("public_listening", { port: config.portPublic })),
     adminApp.listen(config.portAdmin, () => log.info("admin_listening", { port: config.portAdmin })),
   ];
-  connection.start();
+  registry.start();
 
   const shutdown = (): void => {
-    connection.stop();
+    registry.stop();
     void store.flush().finally(() => {
       for (const s of servers) s.close();
       setTimeout(() => process.exit(0), 500).unref();

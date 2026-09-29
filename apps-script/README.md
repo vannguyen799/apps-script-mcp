@@ -1,16 +1,17 @@
 # apps-script-mcp: phần Google Apps Script
 
-Đây là thành phần duy nhất chạm vào Google Sheets. Nó chạy dưới danh nghĩa tài khoản Google của bạn, giữ danh sách bảng tính được phép (allowlist) và chỉ chấp nhận các yêu cầu có chữ ký HMAC từ máy chủ MCP (Docker). Đặc tả giao thức: `docs/DESIGN.md` mục 4 và 5.
+Đây là thành phần duy nhất chạm vào Google Sheets. Nó chạy dưới danh nghĩa tài khoản Google của bạn, giữ danh sách bảng tính được phép (allowlist) và chỉ chấp nhận các yêu cầu có chữ ký HMAC từ máy chủ MCP (Docker). Đặc tả giao thức: `docs/DESIGN.md` mục 4, 5 và 9.3.
 
 ## Cấu trúc
 
 | Tệp | Vai trò |
 |---|---|
 | `src/Code.js` | `doGet`, `doPost` và các hàm quản trị `admin_*` (mỗi hàm gọi `assertOwner_()` trước) |
+| `src/Setup.js` | Một dòng `ASMCP_SETUP_` (mặc định `null`). Máy chủ MCP thay dòng này khi tạo `Code.gs` cá nhân hóa; nằm đầu bản gộp |
 | `src/Auth.js` | HMAC, so sánh hằng thời gian, ghép nối, xác thực yêu cầu, chống replay, ký phản hồi |
 | `src/Actions.js` | Danh sách action cố định và các thao tác Sheets |
 | `src/A1.js` | Phân tích ký hiệu A1 |
-| `src/Store.js` | Lưu allowlist và thông tin ghép nối trong ScriptProperties |
+| `src/Store.js` | Lưu allowlist và các ghép nối (tối đa 20) trong ScriptProperties |
 | `src/Eval.js` | Chạy script tùy chọn (`script.eval`), tắt mặc định, nhật ký chỉ lưu mã băm |
 | `src/Admin.html` | Trang quản trị dành cho chủ sở hữu |
 | `src/appsscript.json` | Manifest (V8, scope tối thiểu) |
@@ -19,24 +20,37 @@
 
 ## Triển khai từng bước
 
-### Cách nhanh nhất: dán 1 file
+### Cách chính: dán `Code.gs` cá nhân hóa từ trang MCP (không phải gõ mã nào)
 
-1. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính.
-2. Mở <https://script.google.com> → **Dự án mới** (New project).
-3. Mở <https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/apps-script/Code.gs>, chọn toàn bộ (Ctrl+A), copy,
-   rồi dán **đè** lên toàn bộ nội dung `Code.gs` trong trình soạn thảo. Bấm Lưu.
+1. Mở trang **Thêm Apps Script** trên máy chủ MCP (`/account`, hoặc trang admin của máy chủ) rồi bấm **Tải / Copy Code.gs**.
+   Tệp này là `Code.gs` đã gắn sẵn một mã cài đặt dùng một lần (khối `ASMCP_SETUP_`), hết hạn sau 30 phút.
+2. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính, rồi mở <https://script.new>.
+3. Chọn toàn bộ nội dung `Code.gs` trong trình soạn thảo (Ctrl+A), dán **đè** tệp vừa copy. Bấm Lưu.
 4. **Triển khai** → **Tùy chọn triển khai mới** → loại **Ứng dụng web**:
    *Thực thi dưới dạng*: **Tôi**; *Người có quyền truy cập*: **Bất kỳ ai**. Bấm Triển khai và cấp quyền khi được hỏi.
-5. Copy URL web app (kết thúc bằng `/exec`), mở nó trên trình duyệt để vào trang quản trị, rồi làm tiếp từ mục
-   [Ghép nối](#4-ghép-nối-với-máy-chủ-mcp) bên dưới.
+5. Copy URL web app (kết thúc bằng `/exec`) và **dán lại vào trang MCP**. Máy chủ tự ghép nối với script qua khối cài đặt; bạn không nhập mã nào.
+6. Mở URL web app (đã đăng nhập bằng tài khoản chủ sở hữu) để thêm bảng tính vào danh sách được phép, xem [Thêm bảng tính](#5-thêm-bảng-tính).
+   Trước khi ghép nối xong, trang quản trị hiển thị "Script này đã sẵn sàng kết nối với <máy chủ>"; sau đó hiển thị "Đã kết nối".
+
+Mã cài đặt chỉ dùng được **một lần** (kể cả khi ghép nối lỗi giữa chừng thì bạn vẫn có thể thử lại cho đến khi thành công). Nhập sai chứng thực
+5 lần, hoặc quá hạn, mã bị hủy: hãy tạo `Code.gs` mới từ trang MCP. Không chia sẻ `Code.gs` cá nhân hóa cho người khác trước khi dùng.
+
+### `Code.gs` chung: để cập nhật
+
+Bản chung (không có mã cài đặt) là <https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/apps-script/Code.gs>. Dùng nó để **cập nhật** script đã cài:
+dán đè lên `Code.gs`, lưu, rồi **Triển khai** → **Quản lý bản triển khai** → sửa bản hiện có → **Phiên bản mới**. URL giữ nguyên nên không phải ghép nối lại
+(các ghép nối được lưu trong ScriptProperties). Bản chung không tự ghép nối được: nó không có khối cài đặt.
+
+### Kết nối script đã cài với một máy chủ MCP khác (luồng nhập mã)
+
+Một script ghép nối được với tối đa **20** máy chủ MCP cùng lúc (mỗi máy chủ có khóa riêng; hủy một cái không ảnh hưởng các cái còn lại).
+Khi script đã cài sẵn (mọi phiên bản có hỗ trợ mục 9.3), hãy dùng luồng nhập mã: dán URL web app vào máy chủ MCP muốn thêm, máy chủ hiển thị mã
+`XXXX-XXXX`, rồi nhập mã ở mục **Nhập mã ghép nối** của trang quản trị Apps Script. Chi tiết ở mục [Ghép nối](#4-ghép-nối-với-máy-chủ-mcp).
 
 Không bắt buộc sửa `appsscript.json`: Google tự nhận diện quyền cần thiết (`spreadsheets`, `userinfo.email`).
 Nếu muốn khóa đúng scope tối thiểu, bật hiển thị manifest trong **Cài đặt dự án** và dán `src/appsscript.json`.
 
-Khi có bản mới: dán lại `Code.gs`, rồi **Triển khai** → **Quản lý bản triển khai** → sửa bản hiện có → **Phiên bản mới**.
-URL giữ nguyên, nên không phải pair lại.
-
-Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `clasp`), dành cho người phát triển.
+Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `clasp`), dành cho người phát triển. Với cách cài này, hãy ghép nối bằng luồng nhập mã (mục 4).
 
 ### 1. Tạo dự án Apps Script
 
@@ -48,7 +62,7 @@ Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `c
 
 - Trong trình soạn thảo, mở **Cài đặt dự án** (biểu tượng bánh răng) và bật **Hiển thị tệp kê khai "appsscript.json" trong trình chỉnh sửa**.
 - Dán nội dung `src/appsscript.json` vào tệp `appsscript.json`.
-- Với mỗi tệp `.js`: tạo tệp script cùng tên (bỏ đuôi, ví dụ `Code`, `Auth`, `Actions`, `A1`, `Store`) và dán nội dung. Xóa tệp `Code.gs` mặc định nếu trùng tên.
+- Với mỗi tệp `.js`: tạo tệp script cùng tên (bỏ đuôi, ví dụ `Setup`, `Code`, `Auth`, `Actions`, `A1`, `Store`) và dán nội dung. Xóa tệp `Code.gs` mặc định nếu trùng tên.
 - Tạo tệp HTML tên `Admin` (**Tệp > + > HTML**) và dán nội dung `src/Admin.html`.
 
 **Cách B: dùng `clasp`**
@@ -86,7 +100,7 @@ Mở URL ứng dụng web ở trên trong trình duyệt **khi đang đăng nh�
 3. Ở trang quản trị Apps Script, nhập mã vào mục **Nhập mã ghép nối** rồi nhấn **Xác nhận mã**.
 4. Trong vài giây máy chủ Docker sẽ tự xác nhận và chuyển sang trạng thái `connected`. Trang Apps Script hiển thị **Đã ghép nối**.
 
-Nhập sai mã 5 lần thì mã bị hủy; hãy tạo mã mới ở máy chủ và nhập lại. Nút **Hủy ghép nối** xóa khóa bí mật; sau đó cần ghép nối lại.
+Nhập sai mã 5 lần thì mã bị hủy; hãy tạo mã mới ở máy chủ và nhập lại. Trang quản trị liệt kê mọi máy chủ đã ghép nối; nút **Hủy ghép nối** ở từng dòng xóa khóa bí mật của riêng máy chủ đó (các máy chủ khác vẫn chạy); máy chủ bị hủy cần ghép nối lại. Ghép nối lại cùng một máy chủ (cùng `instanceId`) sẽ thay thế mục cũ của nó. Nếu script còn khóa ghép nối kiểu cũ (một máy chủ), nó được tự chuyển vào danh sách này.
 
 ### 5. Thêm bảng tính
 
@@ -163,6 +177,7 @@ Bộ kiểm thử nạp `src/*.js` vào một sandbox `vm` với bản giả l�
 
 ## Lưu ý bảo mật
 
+- Mã cài đặt nằm trong chính `Code.gs` cá nhân hóa (biến `ASMCP_SETUP_`): coi tệp đó như một bí mật cho đến khi ghép nối xong. Mã dùng một lần, có hạn, và bị hủy sau 5 lần thử sai; trang quản trị không bao giờ hiển thị nó.
 - Khóa HMAC nằm trong ScriptProperties của dự án. Ai sửa được dự án Apps Script đều đọc được, vì vậy không chia sẻ quyền chỉnh sửa dự án.
 - Mã ghép nối, khóa bí mật và nội dung ô không bao giờ được ghi log.
 - Allowlist được kiểm tra trước khi mở bảng tính; lỗi nội bộ (`INTERNAL`) không kèm dữ liệu hay stack trace.

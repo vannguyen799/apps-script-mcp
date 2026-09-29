@@ -15,24 +15,35 @@ import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import type { PersistedState, StateStore, StoredClient } from "../store/state-store.js";
 import { randomB64Url, sha256Hex } from "../util/crypto.js";
-import type { FailureLimiter } from "../util/rate-limit.js";
-import type { AdminAuth } from "./admin-auth.js";
+import { originAllowed } from "../util/http.js";
+import { safeEqualStr } from "../util/crypto.js";
+import type { AccountService } from "./accounts.js";
+import { AccountError } from "./accounts.js";
 import { renderConsentPage, renderMessagePage } from "./consent-page.js";
+import type { ConsentConnection } from "./consent-page.js";
 import type { PatService } from "./pat.js";
 import { PAT_PREFIX } from "./pat.js";
 import { DEFAULT_SCOPES, isSupportedScope } from "./scopes.js";
+import { readSessionId, setSessionCookie } from "./session-cookie.js";
 
 export const ACCESS_TTL_MS = 3600_000;
 export const REFRESH_TTL_MS = 30 * 24 * 3600_000;
 export const CODE_TTL_MS = 60_000;
 const CONSENT_TTL_MS = 10 * 60_000;
+/** While the user is in the "add an Apps Script" flow the consent nonce lives this long (DESIGN.md 9.4). */
+export const CONSENT_ADD_FLOW_TTL_MS = 30 * 60_000;
 const MAX_CLIENTS = 500;
 export const CONSENT_PATH = "/oauth/consent";
 
+/** What the consent page needs to know about connections (a subset of ConnectionRegistry). */
+export interface ConnectionDirectory {
+  listFor(userId: string): ConsentConnection[];
+}
+
 export interface OAuthProviderDeps {
   store: StateStore;
-  admin: AdminAuth;
-  limiter: FailureLimiter;
+  accounts: AccountService;
+  connections: ConnectionDirectory;
   pats: PatService;
   /** Current public base URL (env or UI setting), if any. */
   baseUrl: () => string | undefined;
@@ -51,6 +62,8 @@ interface PendingConsent {
 
 interface IssuedCode extends PendingConsent {
   challengeServed: boolean;
+  userId: string;
+  connectionId: string;
 }
 
 /** DESIGN.md 3.2: redirect URIs must be https, or http on localhost / 127.0.0.1. */
@@ -70,6 +83,10 @@ export interface GrantView {
   id: string;
   clientId: string;
   clientName: string;
+  userId: string;
+  username: string | null;
+  connectionId: string;
+  connectionLabel: string | null;
   scopes: string[];
   createdAt: number;
 }
@@ -84,7 +101,7 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
   constructor(private readonly deps: OAuthProviderDeps) {
     this.store = deps.store;
     this.log = deps.logger ?? nullLogger;
-    this.now = deps.now ?? Date.now;
+    this.now = deps.now ?? (() => Date.now());
   }
 
   // ---- clients (DCR) ----------------------------------------------------
@@ -147,7 +164,24 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
     return nonce;
   }
 
-  private render(res: Response, rec: PendingConsent, nonce: string, error?: string, status = 200): void {
+  private consentPageHeaders(res: Response, styleNonce: string): void {
+    res.set({
+      "Cache-Control": "no-store",
+      "X-Frame-Options": "DENY",
+      "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${styleNonce}'; frame-ancestors 'none'; base-uri 'none'`,
+      "Referrer-Policy": "no-referrer",
+    });
+  }
+
+  private secure(): boolean {
+    return (this.deps.baseUrl() ?? "").startsWith("https:");
+  }
+
+  /**
+   * Renders the consent step for a nonce (DESIGN.md 9.4). Not logged in: the inline login form. Logged in: the picker of
+   * the user's own connections, last used one preselected; with none, straight to the add-Apps-Script flow.
+   */
+  private render(res: Response, rec: PendingConsent, nonce: string, session: { user: { id: string; username: string; lastConnectionId?: string | null }; csrf: string } | undefined, opts: { error?: string; status?: number; username?: string } = {}): void {
     const client = this.store.state.oauth.clients[rec.clientId];
     let host = rec.redirectUri;
     try {
@@ -155,14 +189,23 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
     } catch {
       /* keep raw */
     }
+    const addUrl = `/account?add=1&consent=${encodeURIComponent(nonce)}`;
+    let picker: NonNullable<Parameters<typeof renderConsentPage>[0]["picker"]> | undefined;
+    if (session) {
+      const connections = this.deps.connections.listFor(session.user.id);
+      if (connections.length === 0) {
+        this.extendConsent(nonce);
+        res.redirect(302, addUrl);
+        return;
+      }
+      const last = session.user.lastConnectionId;
+      const selectedId = connections.some((c) => c.id === last) ? (last as string) : (connections[0]?.id ?? null);
+      picker = { username: session.user.username, csrf: session.csrf, connections, selectedId, addUrl };
+    }
+    const styleNonce = randomB64Url(16);
+    this.consentPageHeaders(res, styleNonce);
     res
-      .status(status)
-      .set({
-        "Cache-Control": "no-store",
-        "X-Frame-Options": "DENY",
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
-        "Referrer-Policy": "no-referrer",
-      })
+      .status(opts.status ?? 200)
       .type("html")
       .send(
         renderConsentPage({
@@ -170,10 +213,20 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
           redirectHost: host,
           scopes: rec.scopes,
           nonce,
-          error,
+          styleNonce,
+          error: opts.error,
           action: CONSENT_PATH,
+          ...(picker ? { picker } : { login: { username: opts.username } }),
         }),
       );
+  }
+
+  /** Extends a live consent nonce to 30 min (the user is adding an Apps Script and will come back). */
+  extendConsent(nonce: string): boolean {
+    const rec = this.consents.get(nonce);
+    if (!rec || rec.expiresAt <= this.now()) return false;
+    rec.expiresAt = Math.max(rec.expiresAt, this.now() + CONSENT_ADD_FLOW_TTL_MS);
+    return true;
   }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
@@ -188,27 +241,49 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
       state: params.state,
     };
     const nonce = this.registerConsent(rec);
-    this.render(res, { ...rec, expiresAt: 0 }, nonce);
+    const req = res.req as Request;
+    this.render(res, { ...rec, expiresAt: 0 }, nonce, this.accounts.getSession(readSessionId(req)));
   }
 
-  /** POST handler for the consent form (urlencoded body must already be parsed). */
+  private get accounts(): AccountService {
+    return this.deps.accounts;
+  }
+
+  private liveConsent(nonce: unknown): PendingConsent | undefined {
+    const rec = typeof nonce === "string" ? this.consents.get(nonce) : undefined;
+    if (!rec) return undefined;
+    if (rec.expiresAt <= this.now()) {
+      this.consents.delete(nonce as string);
+      return undefined;
+    }
+    return rec;
+  }
+
+  /** GET /oauth/consent?nonce=...: back from the add-Apps-Script flow (or a reload). The nonce is not consumed. */
+  async handleConsentGet(req: Request, res: Response): Promise<void> {
+    const nonce = typeof req.query.nonce === "string" ? req.query.nonce : "";
+    const rec = this.liveConsent(nonce);
+    if (!rec) {
+      res.set("Cache-Control", "no-store").status(400).type("html").send(renderMessagePage("Phiên đã hết hạn", "Hãy quay lại ứng dụng và bắt đầu kết nối lại."));
+      return;
+    }
+    this.render(res, rec, nonce, this.accounts.getSession(readSessionId(req)));
+  }
+
+  /** POST handler for the consent form (urlencoded body must already be parsed). Actions: login, approve, deny. */
   async handleConsent(req: Request, res: Response): Promise<void> {
-    const ip = req.ip ?? "unknown";
-    const wait = this.deps.limiter.blockedFor(ip);
     res.set("Cache-Control", "no-store");
-    if (wait > 0) {
-      res.status(429).set("Retry-After", String(wait)).type("html").send(renderMessagePage("Quá nhiều lần thử", "Vui lòng thử lại sau."));
+    if (!originAllowed(req, this.deps.baseUrl())) {
+      res.status(403).type("html").send(renderMessagePage("Yêu cầu bị từ chối", "Origin không hợp lệ."));
       return;
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const nonce = typeof body.nonce === "string" ? body.nonce : "";
-    const rec = this.consents.get(nonce);
-    if (!rec || rec.expiresAt <= this.now()) {
-      this.consents.delete(nonce);
+    const rec = this.liveConsent(nonce);
+    if (!rec) {
       res.status(400).type("html").send(renderMessagePage("Phiên đã hết hạn", "Hãy quay lại ứng dụng và bắt đầu kết nối lại."));
       return;
     }
-    this.consents.delete(nonce); // nonce is single use
 
     const redirect = (params: Record<string, string>) => {
       const u = new URL(rec.redirectUri);
@@ -217,21 +292,62 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
       res.redirect(302, u.href);
     };
 
-    if (body.action === "deny") {
+    const action = body.action;
+    if (action === "deny") {
+      this.consents.delete(nonce);
       redirect({ error: "access_denied", error_description: "The user denied the request" });
       return;
     }
-    const ok = await this.deps.admin.verifyPassword(body.password);
-    if (!ok) {
-      this.deps.limiter.recordFailure(ip);
-      this.log.warn("consent_bad_password");
-      const fresh = this.registerConsent(rec);
-      this.render(res, rec, fresh, "Mật khẩu không đúng.", 401);
+
+    let session = this.accounts.getSession(readSessionId(req));
+
+    if (action === "login") {
+      const username = typeof body.username === "string" ? body.username : "";
+      try {
+        const user = await this.accounts.login(username, body.password, req.ip ?? "unknown");
+        const created = await this.accounts.createSession(user.id);
+        setSessionCookie(res, created.id, this.secure());
+        session = this.accounts.getSession(created.id);
+        this.log.info("consent_login");
+        this.render(res, rec, nonce, session);
+      } catch (e) {
+        if (!(e instanceof AccountError)) throw e;
+        if (e.code === "RATE_LIMITED") res.set("Retry-After", String(e.retryAfterSec ?? 60));
+        this.log.warn("consent_login_failed", { resultCode: e.code });
+        this.render(res, rec, nonce, undefined, { error: e.message, status: e.code === "RATE_LIMITED" ? 429 : 401, username });
+      }
       return;
     }
-    this.deps.limiter.reset(ip);
+
+    if (action !== "approve") {
+      this.render(res, rec, nonce, session, { error: "Yêu cầu không hợp lệ.", status: 400 });
+      return;
+    }
+    if (!session) {
+      this.render(res, rec, nonce, undefined, { error: "Hãy đăng nhập trước.", status: 401 });
+      return;
+    }
+    const csrf = typeof body.csrf === "string" ? body.csrf : "";
+    if (!safeEqualStr(csrf, session.csrf)) {
+      this.render(res, rec, nonce, session, { error: "Phiên không hợp lệ, hãy thử lại.", status: 403 });
+      return;
+    }
+    // Re-check on approve that the connection belongs to the session user (DESIGN.md 9.4 step 3).
+    const connectionId = typeof body.connectionId === "string" ? body.connectionId : "";
+    const mine = this.deps.connections.listFor(session.user.id).some((c) => c.id === connectionId);
+    if (!mine) {
+      this.log.warn("consent_foreign_connection");
+      this.render(res, rec, nonce, session, { error: "Kết nối Apps Script không hợp lệ.", status: 403 });
+      return;
+    }
+    this.consents.delete(nonce); // nonce is single use
+    const userId = session.user.id;
+    await this.store.update((st) => {
+      const u = st.users[userId];
+      if (u) u.lastConnectionId = connectionId;
+    });
     const code = randomB64Url(32);
-    this.codes.set(sha256Hex(code), { ...rec, expiresAt: this.now() + CODE_TTL_MS, challengeServed: false });
+    this.codes.set(sha256Hex(code), { ...rec, expiresAt: this.now() + CODE_TTL_MS, challengeServed: false, userId, connectionId });
     this.log.info("consent_approved");
     redirect({ code });
   }
@@ -264,7 +380,7 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
     if (redirectUri !== rec.redirectUri) throw new InvalidGrantError("redirect_uri does not match the authorization request");
     if (!this.resourceOk(resource)) throw new InvalidTargetError("resource does not match this server");
     const grantId = randomUUID();
-    return this.issue(grantId, client.client_id, rec.scopes, true);
+    return this.issue(grantId, client.client_id, rec.scopes, true, { userId: rec.userId, connectionId: rec.connectionId });
   }
 
   private prune(s: PersistedState, t: number): void {
@@ -276,14 +392,14 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
     for (const g of Object.keys(s.oauth.grants)) if (!live.has(g)) delete s.oauth.grants[g];
   }
 
-  private async issue(grantId: string, clientId: string, scopes: string[], newGrant: boolean): Promise<OAuthTokens> {
+  private async issue(grantId: string, clientId: string, scopes: string[], newGrant: boolean, bound: { userId: string; connectionId: string }): Promise<OAuthTokens> {
     const t = this.now();
     const access = randomB64Url(32);
     const refresh = randomB64Url(32);
     await this.store.update((s) => {
-      if (newGrant) s.oauth.grants[grantId] = { id: grantId, clientId, scopes, createdAt: t };
-      s.oauth.accessTokens[sha256Hex(access)] = { grantId, clientId, scopes, expiresAt: t + ACCESS_TTL_MS };
-      s.oauth.refreshTokens[sha256Hex(refresh)] = { grantId, clientId, expiresAt: t + REFRESH_TTL_MS };
+      if (newGrant) s.oauth.grants[grantId] = { id: grantId, clientId, ...bound, scopes, createdAt: t };
+      s.oauth.accessTokens[sha256Hex(access)] = { grantId, clientId, ...bound, scopes, expiresAt: t + ACCESS_TTL_MS };
+      s.oauth.refreshTokens[sha256Hex(refresh)] = { grantId, clientId, ...bound, expiresAt: t + REFRESH_TTL_MS };
       this.prune(s, t);
     });
     return { access_token: access, token_type: "Bearer", expires_in: ACCESS_TTL_MS / 1000, refresh_token: refresh, scope: scopes.join(" ") };
@@ -309,7 +425,7 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
       granted = scopes;
     }
     rec.rotated = true; // synchronous with the check above: concurrent reuse is detected
-    return this.issue(rec.grantId, client.client_id, granted, false);
+    return this.issue(rec.grantId, client.client_id, granted, false, { userId: grant.userId, connectionId: grant.connectionId });
   }
 
   // ---- verification / revocation ---------------------------------------
@@ -319,11 +435,23 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
       const pat = this.deps.pats.verify(token);
       if (!pat) throw new InvalidTokenError("Invalid token");
       // requireBearerAuth insists on an expiry; PATs have none, so report a rolling short one.
-      return { token, clientId: `pat:${pat.id}`, scopes: pat.scopes, expiresAt: Math.floor(t / 1000) + 3600, extra: { kind: "pat", patId: pat.id } };
+      return {
+        token,
+        clientId: `pat:${pat.id}`,
+        scopes: pat.scopes,
+        expiresAt: Math.floor(t / 1000) + 3600,
+        extra: { kind: "pat", patId: pat.id, userId: pat.userId, connectionId: pat.connectionId },
+      };
     }
     const rec = this.store.state.oauth.accessTokens[sha256Hex(token)];
     if (!rec || rec.expiresAt <= t || !this.store.state.oauth.grants[rec.grantId]) throw new InvalidTokenError("Invalid or expired token");
-    return { token, clientId: rec.clientId, scopes: rec.scopes, expiresAt: Math.floor(rec.expiresAt / 1000), extra: { kind: "oauth", grantId: rec.grantId } };
+    return {
+      token,
+      clientId: rec.clientId,
+      scopes: rec.scopes,
+      expiresAt: Math.floor(rec.expiresAt / 1000),
+      extra: { kind: "oauth", grantId: rec.grantId, userId: rec.userId, connectionId: rec.connectionId },
+    };
   }
 
   async revokeToken(client: OAuthClientInformationFull, request: OAuthTokenRevocationRequest): Promise<void> {
@@ -342,24 +470,32 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
     }
   }
 
-  // ---- admin views -------------------------------------------------------
-  listGrants(): GrantView[] {
+  // ---- admin / account views ---------------------------------------------
+  /** All grants when `userId` is omitted (owner admin UI), else only that user's. */
+  listGrants(userId?: string): GrantView[] {
     const s = this.store.state;
     return Object.values(s.oauth.grants)
+      .filter((g) => userId === undefined || g.userId === userId)
       .map((g) => ({
         id: g.id,
         clientId: g.clientId,
         clientName: s.oauth.clients[g.clientId]?.client_name ?? "(không tên)",
+        userId: g.userId,
+        username: s.users[g.userId]?.username ?? null,
+        connectionId: g.connectionId,
+        connectionLabel: s.connections[g.connectionId]?.label ?? null,
         scopes: g.scopes,
         createdAt: g.createdAt,
       }))
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  async revokeGrant(grantId: string): Promise<boolean> {
+  async revokeGrant(grantId: string, userId?: string): Promise<boolean> {
     let existed = false;
     await this.store.update((s) => {
-      existed = grantId in s.oauth.grants;
+      const g = s.oauth.grants[grantId];
+      if (!g || (userId !== undefined && g.userId !== userId)) return;
+      existed = true;
       delete s.oauth.grants[grantId];
       for (const [h, a] of Object.entries(s.oauth.accessTokens)) if (a.grantId === grantId) delete s.oauth.accessTokens[h];
       for (const [h, r] of Object.entries(s.oauth.refreshTokens)) if (r.grantId === grantId) delete s.oauth.refreshTokens[h];

@@ -1,0 +1,28 @@
+# Docker build context is the repo root (server/Dockerfile). Keep it small and free of local state.
+.git
+.github
+.gitignore
+.dockerignore
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+**/state.json
+**/data
+.clasp.json
+.DS_Store
+
+# Only the single-file bundle of the Apps Script side goes into the image.
+apps-script/*
+!apps-script/Code.gs
+
+# Not needed to build the server image.
+docs
+scripts
+server/test
+server/vitest.config.ts
+docker-compose.yml
+*.md

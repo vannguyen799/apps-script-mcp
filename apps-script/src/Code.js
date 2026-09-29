@@ -64,15 +64,15 @@ function assertOwner_() {
 /** Everything the admin page renders. Never includes the secret or code hash. */
 function admin_getState() {
   assertOwner_();
-  var pairing = getPairing_();
+  var pairings = listPairings_();
   var pending = getPending_();
   var now = Date.now();
   return {
     account: Session.getEffectiveUser().getEmail(),
     webAppUrl: ScriptApp.getService().getUrl(),
-    paired: !!pairing,
-    instanceLabel: pairing ? pairing.instanceLabel : null,
-    pairedAt: pairing ? pairing.pairedAt : null,
+    paired: pairings.length > 0,
+    pairings: pairings,
+    setup: setupState_(now),
     pendingExpiresAt: pending && pending.expiresAt > now ? pending.expiresAt : null,
     spreadsheets: getAllowlist_(),
     evalEnabled: isEvalEnabled_(),
@@ -94,13 +94,14 @@ function admin_submitPairingCode(code) {
   return { ok: true, expiresAt: expiresAt };
 }
 
-function admin_unpair() {
+/** Removes one paired server (by instanceId); other pairings keep working. Returns the remaining list. */
+function admin_unpair(instanceId) {
   assertOwner_();
-  withLock_(function () {
-    clearPairing_();
-    clearPending_();
+  if (typeof instanceId !== 'string' || !instanceId) throw new Error('Thiếu mã định danh của kết nối cần hủy.');
+  return withLock_(function () {
+    if (!removePairing_(instanceId)) throw new Error('Không tìm thấy kết nối này.');
+    return { ok: true, pairings: listPairings_() };
   });
-  return { ok: true };
 }
 
 /** Adds a spreadsheet by URL or ID; validated by opening it. */
@@ -175,6 +176,27 @@ function admin_getEvalAudit() {
 }
 
 // ---------- admin helpers ----------
+
+/**
+ * Setup-block status for the admin page (section 9.3), never the token itself:
+ * null (no block) | {status: 'ready'|'connected'|'burned'|'expired', server, expiresAt}.
+ */
+function setupState_(now) {
+  var block = getSetupBlock_();
+  if (!block) return null;
+  var hash = setupTokenHash_(block.token);
+  var status = 'ready';
+  if (getSetupConsumed_().indexOf(hash) >= 0) {
+    status = getSetupAttempts_(hash) >= PAIR_MAX_ATTEMPTS_ ? 'burned' : 'connected';
+  } else if (typeof block.expiresAt !== 'number' || !(now < block.expiresAt)) {
+    status = 'expired';
+  }
+  return {
+    status: status,
+    server: typeof block.server === 'string' ? block.server.slice(0, 200) : '',
+    expiresAt: typeof block.expiresAt === 'number' ? block.expiresAt : null
+  };
+}
 
 function extractSpreadsheetId_(input) {
   var s = typeof input === 'string' ? input.trim() : '';

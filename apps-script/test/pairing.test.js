@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { createSandbox, buildPairRequest, parseBody, newSecret } = require('./harness');
+const { createSandbox, buildPairRequest, buildCallRequest, parseBody, newSecret, newNonce } = require('./harness');
 
 const pairReq = (sb, over = {}) => buildPairRequest({
   instanceId: crypto.randomUUID(), pairingCode: 'ABCD2345', secret: newSecret(), ts: sb.clock.now, ...over
@@ -21,8 +21,8 @@ test('pairing success returns a proof verifiable with Node crypto and stores the
   const proof = crypto.createHmac('sha256', Buffer.from(secret, 'utf8'))
     .update(`v1\npair-ack\n${instanceId}\n${ts}`).digest('hex');
   assert.equal(body.result.proof, proof);
-  const stored = JSON.parse(sb.props.get('asmcp.pairing'));
-  assert.equal(stored.instanceId, instanceId);
+  const stored = JSON.parse(sb.props.get('asmcp.pairings'))[instanceId];
+  assert.equal(sb.props.has('asmcp.pairing'), false);
   assert.equal(stored.instanceLabel, 'My Docker');
   assert.equal(stored.secret, secret);
   assert.ok(stored.pairedAt);
@@ -46,7 +46,7 @@ test('PAIRING_NOT_READY when nothing is pending, and no attempt is counted', () 
   const env = sb.doPost(pairReq(sb));
   assert.equal(parseBody(env).error.code, 'PAIRING_NOT_READY');
   assert.equal(env.sig, null);
-  assert.equal(sb.props.has('asmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairings'), false);
 });
 
 test('expired pending code is PAIRING_NOT_READY', () => {
@@ -66,7 +66,7 @@ test('wrong code: PAIRING_INVALID x5 then pending is deleted (even the right cod
   }
   assert.equal(sb.props.has('asmcp.pairing.pending'), false);
   assert.equal(parseBody(sb.doPost(pairReq(sb))).error.code, 'PAIRING_NOT_READY');
-  assert.equal(sb.props.has('asmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairings'), false);
 });
 
 test('4 wrong attempts then the right code still succeeds', () => {
@@ -82,12 +82,24 @@ test('code normalization: server may send dashes/lowercase', () => {
   assert.equal(parseBody(sb.doPost(pairReq(sb, { pairingCode: ' abcd-2345 ' }))).ok, true);
 });
 
-test('a new pairing replaces the previous one', () => {
+test('re-pairing the same instanceId replaces its own entry (new secret) and keeps others', () => {
   const sb = createSandbox();
-  const first = sb.pairClient('ABCD-2345');
-  const second = sb.pairClient('EFGH-2345');
-  assert.equal(first.call('ping').error.code, 'UNAUTHENTICATED');
-  assert.equal(second.call('ping').ok, true);
+  const other = sb.pairClient('WXYZ-2345');
+  const instanceId = crypto.randomUUID();
+  const oldSecret = newSecret();
+  sb.enterPairingCode('ABCD-2345');
+  assert.equal(parseBody(sb.doPost(buildPairRequest({ instanceId, pairingCode: 'ABCD2345', secret: oldSecret, ts: sb.clock.now }))).ok, true);
+  const newOne = newSecret();
+  sb.enterPairingCode('EFGH-2345');
+  assert.equal(parseBody(sb.doPost(buildPairRequest({ instanceId, instanceLabel: 'v2', pairingCode: 'EFGH2345', secret: newOne, ts: sb.clock.now }))).ok, true);
+  const map = JSON.parse(sb.props.get('asmcp.pairings'));
+  assert.equal(Object.keys(map).length, 2);
+  assert.equal(map[instanceId].secret, newOne);
+  assert.equal(map[instanceId].instanceLabel, 'v2');
+  const call = (secret) => parseBody(sb.doPost(buildCallRequest({ instanceId, secret, ts: sb.clock.now, nonce: newNonce(), action: 'ping' })));
+  assert.equal(call(oldSecret).error.code, 'UNAUTHENTICATED');
+  assert.equal(call(newOne).ok, true);
+  assert.equal(other.call('ping').ok, true);
 });
 
 test('malformed pairing requests are BAD_REQUEST', () => {
@@ -99,7 +111,7 @@ test('malformed pairing requests are BAD_REQUEST', () => {
   assert.equal(parseBody(sb.doPost('not json')).error.code, 'BAD_REQUEST');
   assert.equal(parseBody(sb.doPost('{"v":2,"kind":"pair"}')).error.code, 'BAD_REQUEST');
   assert.equal(parseBody(sb.doPost('{"v":1,"kind":"nope"}')).error.code, 'BAD_REQUEST');
-  assert.equal(sb.props.has('asmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairings'), false);
 });
 
 test('admin rejects invalid code formats', () => {

@@ -66,7 +66,7 @@ describe("OAuth metadata without a base URL", () => {
       expect(r.status, p).toBe(503);
       expect(((await r.json()) as { error: string }).error).toBe("public_base_url_not_configured");
     }
-    const { token } = await h.pats.create("p", ["sheets.read"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "p", ["sheets.read"]);
     const c = await mcpClient(token);
     expect((await c.listTools()).tools).toHaveLength(8);
     await c.close();
@@ -144,34 +144,12 @@ describe("authorization code + PKCE", () => {
     expect(new URL(r.headers.get("location")!).searchParams.get("error")).toBe("invalid_scope");
   });
 
-  it("consent page needs the admin password; wrong password re-renders with a fresh nonce and counts toward the limiter", async () => {
-    const clientId = await registerClient(h);
-    const { challenge } = { challenge: "c".repeat(43) };
-    const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: "http://localhost:9999/cb", code_challenge: challenge, code_challenge_method: "S256" });
-    let html = await (await fetch(`${h.publicUrl}/authorize?${q}`)).text();
-    expect(html).toContain("Test Client");
-    expect(html).toContain("localhost:9999");
-    let nonce = /name="nonce" value="([^"]+)"/.exec(html)![1]!;
-    const post = (n: string, pw: string) =>
-      fetch(`${h.publicUrl}/oauth/consent`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ nonce: n, password: pw, action: "approve" }) });
-    const bad = await post(nonce, "wrong");
-    expect(bad.status).toBe(401);
-    html = await bad.text();
-    const nonce2 = /name="nonce" value="([^"]+)"/.exec(html)![1]!;
-    expect(nonce2).not.toBe(nonce);
-    expect((await post(nonce, h.password)).status).toBe(400); // old nonce is dead
-    nonce = nonce2;
-    for (let i = 0; i < 4; i++) {
-      const r = await post(nonce, "wrong");
-      nonce = /name="nonce" value="([^"]+)"/.exec(await r.text())![1]!;
-    }
-    expect((await post(nonce, h.password)).status).toBe(429); // 5 failures -> blocked, even for the right password
-  });
-
-  it("deny redirects with access_denied", async () => {
+  it("deny redirects with access_denied (no login needed)", async () => {
     const clientId = await registerClient(h);
     const q = new URLSearchParams({ response_type: "code", client_id: clientId, redirect_uri: "http://localhost:9999/cb", code_challenge: "c".repeat(43), code_challenge_method: "S256", state: "s" });
     const html = await (await fetch(`${h.publicUrl}/authorize?${q}`)).text();
+    expect(html).toContain("Test Client");
+    expect(html).toContain("localhost:9999");
     const nonce = /name="nonce" value="([^"]+)"/.exec(html)![1]!;
     const r = await fetch(`${h.publicUrl}/oauth/consent`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ nonce, action: "deny" }) });
     const u = new URL(r.headers.get("location")!);
@@ -226,7 +204,7 @@ describe("refresh token rotation", () => {
 
   it("only SHA-256 hashes of tokens are persisted", async () => {
     const { tokens } = await fullOAuth(h);
-    const { token } = await h.pats.create("cli", ["sheets.read"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "cli", ["sheets.read"]);
     await h.store.flush();
     const raw = await readFile(h.store.filePath, "utf8");
     for (const secret of [tokens.access_token, tokens.refresh_token, token, h.password]) expect(raw).not.toContain(secret);
@@ -271,7 +249,7 @@ describe("scope enforcement on MCP tools", () => {
   });
 
   it("lists the 8 tools with annotations", async () => {
-    const { token } = await h.pats.create("t", ["sheets.read"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "t", ["sheets.read"]);
     const c = await mcpClient(token);
     const tools = (await c.listTools()).tools;
     expect(tools.map((t) => t.name).sort()).toEqual(["append_rows", "batch_update", "get_metadata", "list_sheets", "list_spreadsheets", "read_range", "search", "write_range"]);
@@ -286,7 +264,7 @@ describe("scope enforcement on MCP tools", () => {
 
 describe("personal access tokens", () => {
   it("prefix, shown once, hashed, verified, revocable, lastUsedAt tracked", async () => {
-    const { token, pat } = await h.pats.create("laptop", ["sheets.read", "sheets.write"]);
+    const { token, pat } = await h.pats.create(h.ownerId, h.connectionId, "laptop", ["sheets.read", "sheets.write"]);
     expect(token.startsWith(PAT_PREFIX)).toBe(true);
     expect(JSON.stringify(h.store.state)).not.toContain(token);
     expect(Object.keys(h.store.state.pats)[0]).toMatch(/^[0-9a-f]{64}$/);
@@ -300,9 +278,9 @@ describe("personal access tokens", () => {
     await expect(h.provider.verifyAccessToken(PAT_PREFIX + "forged")).rejects.toThrow();
   });
   it("rejects bad labels and scopes", async () => {
-    await expect(h.pats.create("", ["sheets.read"])).rejects.toThrow();
-    await expect(h.pats.create("x", ["drive"])).rejects.toThrow();
-    await expect(h.pats.create("x", [])).rejects.toThrow();
+    await expect(h.pats.create(h.ownerId, h.connectionId, "", ["sheets.read"])).rejects.toThrow();
+    await expect(h.pats.create(h.ownerId, h.connectionId, "x", ["drive"])).rejects.toThrow();
+    await expect(h.pats.create(h.ownerId, h.connectionId, "x", [])).rejects.toThrow();
   });
 });
 
@@ -312,11 +290,11 @@ describe("rate limit", () => {
     h = await makeHarness();
     // rebuild a public app with a tiny limit
     const { createPublicApp } = await import("../src/http/public-app.js");
-    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, service: h.service, trustProxy: false, mcpRateLimitPerMin: 3 });
+    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, ipLimiter: h.ipLimiter, trustProxy: false, mcpRateLimitPerMin: 3 });
     const srv = app.listen(0);
     await new Promise((r) => srv.once("listening", r));
     const port = (srv.address() as { port: number }).port;
-    const { token } = await h.pats.create("t", ["sheets.read"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "t", ["sheets.read"]);
     const statuses: number[] = [];
     for (let i = 0; i < 5; i++) {
       const r = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: i, method: "ping" }) });

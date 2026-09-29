@@ -102,15 +102,42 @@ var ID_RE_ = /^[A-Za-z0-9_-]{1,64}$/;
 var SECRET_RE_ = /^[A-Za-z0-9_-]{43}$/;
 var NONCE_RE_ = /^[A-Za-z0-9_-]{16,64}$/;
 
-/** Pairing (section 4.2 steps 3-4). */
+/** ScriptApp.getScriptId(), or null if unavailable. */
+function getScriptId_() {
+  try {
+    var id = ScriptApp.getScriptId();
+    return typeof id === 'string' && id ? id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Success body shared by code pairing and setup pairing (section 4.2 step 4): {account, scriptId, scriptName, proof}.
+ * scriptName is always null: Apps Script has no scope-free way to read the project name (that needs Drive).
+ */
+function pairAck_(secret, instanceId, ts) {
+  var proof = hmacHex_(secret, 'v1\npair-ack\n' + instanceId + '\n' + ts);
+  var account = Session.getEffectiveUser().getEmail();
+  return {
+    body: JSON.stringify({ ok: true, result: { account: account, scriptId: getScriptId_(), scriptName: null, proof: proof } }),
+    sig: null
+  };
+}
+
+/** Pairing (section 4.2 steps 3-4; setup mode: section 9.3). */
 function handlePair_(req) {
+  var setup = req.mode === 'setup';
+  if (req.mode !== undefined && !setup) return unsignedError_('BAD_REQUEST', 'Malformed pairing request');
   if (typeof req.instanceId !== 'string' || !ID_RE_.test(req.instanceId) ||
       typeof req.instanceLabel !== 'string' || req.instanceLabel.length > 64 ||
-      typeof req.pairingCode !== 'string' || req.pairingCode.length > 64 ||
       typeof req.secret !== 'string' || !SECRET_RE_.test(req.secret) ||
-      !isIntegerNumber_(req.ts)) {
+      !isIntegerNumber_(req.ts) ||
+      (setup ? (typeof req.setupProof !== 'string' || req.setupProof.length !== 64)
+             : (typeof req.pairingCode !== 'string' || req.pairingCode.length > 64))) {
     return unsignedError_('BAD_REQUEST', 'Malformed pairing request');
   }
+  if (setup) return handleSetupPair_(req);
   var code = normalizePairingCode_(req.pairingCode);
   var hash = pairingCodeHash_(code);
   return withLock_(function () {
@@ -130,19 +157,64 @@ function handlePair_(req) {
       }
       return unsignedError_('PAIRING_INVALID', 'Pairing code is invalid');
     }
-    setPairing_({
+    // Adds to the map; the same instanceId replaces its own entry. LIMIT_EXCEEDED keeps the code pending.
+    addPairing_({
       instanceId: req.instanceId,
       instanceLabel: req.instanceLabel,
       secret: req.secret,
       pairedAt: new Date(now).toISOString()
     });
     clearPending_();
-    var proof = hmacHex_(req.secret, 'v1\npair-ack\n' + req.instanceId + '\n' + req.ts);
-    var account = Session.getEffectiveUser().getEmail();
-    return {
-      body: JSON.stringify({ ok: true, result: { account: account, proof: proof } }),
-      sig: null
-    };
+    return pairAck_(req.secret, req.instanceId, req.ts);
+  });
+}
+
+/** The installed setup block when it is a well-formed object with a 43-char token, else null. */
+function getSetupBlock_() {
+  var s = typeof ASMCP_SETUP_ === 'undefined' ? null : ASMCP_SETUP_;
+  if (!isPlainObject_(s) || typeof s.token !== 'string' || !SECRET_RE_.test(s.token)) return null;
+  return s;
+}
+
+function setupTokenHash_(token) {
+  return sha256Hex_('asmcp-setup-v1:' + token);
+}
+
+/**
+ * Setup pair (section 9.3): proof = HMAC(token, "v1\nsetup\n" + instanceId + "\n" + ts + "\n" + secret).
+ * Errors: PAIRING_NOT_READY (no block / expired), PAIRING_INVALID (bad proof / consumed; the 5th bad proof burns
+ * the token), REQUEST_EXPIRED (ts outside the skew window; not counted), LIMIT_EXCEEDED (20 pairings; token kept).
+ */
+function handleSetupPair_(req) {
+  return withLock_(function () {
+    var now = Date.now();
+    var block = getSetupBlock_();
+    if (!block || typeof block.expiresAt !== 'number' || !(now < block.expiresAt)) {
+      return unsignedError_('PAIRING_NOT_READY', 'No setup is waiting');
+    }
+    var hash = setupTokenHash_(block.token);
+    if (getSetupConsumed_().indexOf(hash) >= 0) {
+      return unsignedError_('PAIRING_INVALID', 'Setup token is invalid');
+    }
+    if (Math.abs(now - req.ts) > AUTH_MAX_SKEW_MS_) {
+      return unsignedError_('REQUEST_EXPIRED', 'Request timestamp is outside the allowed window');
+    }
+    var expected = hmacHex_(block.token, 'v1\nsetup\n' + req.instanceId + '\n' + req.ts + '\n' + req.secret);
+    if (!constantTimeEqual_(expected, req.setupProof)) {
+      var n = getSetupAttempts_(hash) + 1;
+      setSetupAttempts_(hash, n);
+      if (n >= PAIR_MAX_ATTEMPTS_) addSetupConsumed_(hash); // burned
+      return unsignedError_('PAIRING_INVALID', 'Setup token is invalid');
+    }
+    addPairing_({
+      instanceId: req.instanceId,
+      instanceLabel: req.instanceLabel,
+      secret: req.secret,
+      pairedAt: new Date(now).toISOString()
+    });
+    addSetupConsumed_(hash);
+    clearSetupAttempts_();
+    return pairAck_(req.secret, req.instanceId, req.ts);
   });
 }
 
@@ -157,8 +229,8 @@ function handleCall_(req) {
     return unsignedError_('BAD_REQUEST', 'Malformed request');
   }
   // 2. pairing exists and instanceId matches
-  var pairing = getPairing_();
-  if (!pairing || !constantTimeEqual_(pairing.instanceId, req.instanceId)) {
+  var pairing = getPairing_(req.instanceId);
+  if (!pairing) {
     return unsignedError_('UNAUTHENTICATED', 'Authentication failed');
   }
   // 3. freshness

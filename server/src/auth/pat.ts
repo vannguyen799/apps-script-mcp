@@ -8,6 +8,8 @@ const LAST_USED_PERSIST_MS = 60_000;
 
 export interface PatView {
   id: string;
+  userId: string;
+  connectionId: string;
   label: string;
   scopes: string[];
   createdAt: number;
@@ -24,7 +26,9 @@ export class PatService {
     private readonly now: () => number = Date.now,
   ) {}
 
-  async create(label: string, scopes: string[]): Promise<{ token: string; pat: PatView }> {
+  /** The PAT is bound to `{userId, connectionId}`; the connection must be the user's own (DESIGN.md 9.4). */
+  async create(userId: string, connectionId: string, label: string, scopes: string[]): Promise<{ token: string; pat: PatView }> {
+    if (this.store.state.connections[connectionId]?.userId !== userId) throw new Error("Kết nối Apps Script không hợp lệ.");
     const clean = typeof label === "string" ? label.trim().slice(0, 64) : "";
     if (!clean) throw new Error("Label is required.");
     if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string" && isSupportedScope(s))) {
@@ -33,6 +37,8 @@ export class PatService {
     const token = PAT_PREFIX + randomB64Url(32);
     const rec: StoredPat = {
       id: randomUUID(),
+      userId,
+      connectionId,
       label: clean,
       scopes: [...new Set(scopes)],
       createdAt: this.now(),
@@ -45,17 +51,20 @@ export class PatService {
     return { token, pat: rec };
   }
 
-  list(): PatView[] {
+  /** All PATs when `userId` is omitted (owner admin UI), else only that user's. */
+  list(userId?: string): PatView[] {
     return Object.values(this.store.state.pats)
-      .map((p) => ({ id: p.id, label: p.label, scopes: p.scopes, createdAt: p.createdAt, lastUsedAt: p.lastUsedAt, hint: p.hint }))
+      .filter((p) => userId === undefined || p.userId === userId)
+      .map((p) => ({ id: p.id, userId: p.userId, connectionId: p.connectionId, label: p.label, scopes: p.scopes, createdAt: p.createdAt, lastUsedAt: p.lastUsedAt, hint: p.hint }))
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  async revoke(id: string): Promise<boolean> {
+  /** `userId` limits revocation to that user's own PATs; omit it for the owner admin UI. */
+  async revoke(id: string, userId?: string): Promise<boolean> {
     let found = false;
     await this.store.update((s) => {
       for (const [h, p] of Object.entries(s.pats)) {
-        if (p.id === id) {
+        if (p.id === id && (userId === undefined || p.userId === userId)) {
           delete s.pats[h];
           found = true;
         }

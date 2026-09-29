@@ -30,3 +30,8 @@ export const signPairAck = (secret: string, instanceId: string, ts: number): str
 export function verifyPairProof(secret: string, instanceId: string, ts: number, proof: unknown): boolean {
   return typeof proof === "string" && safeEqualHex(signPairAck(secret, instanceId, ts), proof);
 }
+
+/** DESIGN.md 9.3: setupProof = HMAC(token, "v1\nsetup\n" + instanceId + "\n" + ts + "\n" + secret); the key is the token string's UTF-8 bytes. */
+export const setupProofMessage = (instanceId: string, ts: number, secret: string): string => `v1\nsetup\n${instanceId}\n${ts}\n${secret}`;
+
+export const signSetupProof = (token: string, instanceId: string, ts: number, secret: string): string => hmacHex(token, setupProofMessage(instanceId, ts, secret));

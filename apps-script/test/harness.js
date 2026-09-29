@@ -4,7 +4,7 @@
  * No dependencies. Intended to be reused by the Node-server contract test.
  *
  *   const { createSandbox } = require('./harness');
- *   const sb = createSandbox({ activeEmail, effectiveEmail, now, webAppUrl });
+ *   const sb = createSandbox({ activeEmail, effectiveEmail, now, webAppUrl, scriptId, setup });
  *
  * createSandbox(opts) returns:
  *   ctx                 the vm context (all src/*.js globals, e.g. ctx.admin_getState)
@@ -18,13 +18,16 @@
  *                       admin page would); omit access to leave it un-allowlisted. Returns {id,...}.
  *   sheetsFake          {spreadsheets: Map, opened: [ids passed to openById], get(id)}
  *   pairClient(code?)   full happy-path pairing; returns a client {instanceId, secret, account, call(...)}
+ *   setSetup(block)     sets ASMCP_SETUP_ (what the server injects into Code.gs); null clears it.
+ *                       createSandbox({setup: {...}}) does the same after loading, in src and bundle mode.
+ *   pairClientViaSetup({token?, instanceId?}) happy-path setup pairing (mode:"setup"); returns a client like pairClient
  *   clock               {now, advance(ms)}   (Date.now() inside the sandbox follows it)
  *   session             {active, effective}  emails returned by Session (set active = '' for anonymous)
  *   props / cache       backing stores (props: Map, cache: Map) for white-box assertions
  *   logs                every console.* call made by the script (tests assert no secrets are logged)
  *
  * Also exported (pure Node, independent implementation of DESIGN.md section 4 for clients):
- *   hmacHex, newSecret, newNonce, buildPairRequest, buildCallRequest, parseBody, verifyEnvelope.
+ *   hmacHex, newSecret, newNonce, buildPairRequest, buildSetupPairRequest, buildCallRequest, parseBody, verifyEnvelope.
  */
 const vm = require('node:vm');
 const fs = require('node:fs');
@@ -46,6 +49,12 @@ const newNonce = () => b64url(crypto.randomBytes(16));
 
 function buildPairRequest({ instanceId, instanceLabel = 'test', pairingCode, secret, ts }) {
   return JSON.stringify({ v: 1, kind: 'pair', instanceId, instanceLabel, pairingCode, secret, ts });
+}
+
+/** Setup pair (section 9.3): setupProof = HMAC(token, "v1\nsetup\n" + instanceId + "\n" + ts + "\n" + secret). */
+function buildSetupPairRequest({ instanceId, instanceLabel = 'test', secret, ts, token, setupProof }) {
+  const proof = setupProof !== undefined ? setupProof : hmacHex(token, `v1\nsetup\n${instanceId}\n${ts}\n${secret}`);
+  return JSON.stringify({ v: 1, kind: 'pair', mode: 'setup', instanceId, instanceLabel, secret, ts, setupProof: proof });
 }
 
 function buildCallRequest({ instanceId, secret, ts, nonce, action, params, payload, sig }) {
@@ -389,7 +398,10 @@ function createSandbox(opts = {}) {
   const ctx = vm.createContext({
     Utilities, PropertiesService: propsService, CacheService: cacheService, LockService: lockService,
     Session: SessionMock, ContentService, HtmlService, SpreadsheetApp,
-    ScriptApp: { getService: () => ({ getUrl: () => opts.webAppUrl || 'https://script.google.com/macros/s/AKfycbTEST/exec' }) },
+    ScriptApp: {
+      getService: () => ({ getUrl: () => opts.webAppUrl || 'https://script.google.com/macros/s/AKfycbTEST/exec' }),
+      getScriptId: () => opts.scriptId || '1AbCdEfGhIjKlMnOpQrStUvWxYz-TEST_SCRIPT_ID'
+    },
     console: consoleMock, Logger: { log: record('log') }, Date: FakeDate
   });
   if (BUNDLE) {
@@ -400,12 +412,30 @@ function createSandbox(opts = {}) {
     }
   }
 
+  const makeClient = (instanceId, secret, account) => ({
+    instanceId, secret, account,
+    /** Sends a signed call. overrides: {ts, nonce, payload, sig, instanceId}. */
+    call(action, params, overrides = {}) {
+      const nonce = overrides.nonce || newNonce();
+      const req = buildCallRequest({
+        instanceId: overrides.instanceId || instanceId, secret, ts: overrides.ts === undefined ? clock.now : overrides.ts,
+        nonce, action, params, payload: overrides.payload, sig: overrides.sig
+      });
+      const envelope = sb.doPost(req);
+      const parsed = parseBody(envelope);
+      return { envelope, nonce, ...parsed, sigValid: verifyEnvelope(envelope, secret, nonce) };
+    }
+  });
+
+  if (opts.setup !== undefined) ctx.ASMCP_SETUP_ = opts.setup;
+
   const sb = {
     ctx, clock, session, logs, props, cache, sheetsFake,
     doPost(bodyText) {
       const out = ctx.doPost({ postData: { contents: bodyText, type: 'text/plain' } });
       return JSON.parse(out.getContent());
     },
+    setSetup(block) { ctx.ASMCP_SETUP_ = block; },
     enterPairingCode(code) { return ctx.admin_submitPairingCode(code); },
     addSpreadsheet({ id, name = 'Test sheet', sheets, alias, access } = {}) {
       id = id || `1${crypto.randomBytes(20).toString('base64url')}`;
@@ -426,24 +456,19 @@ function createSandbox(opts = {}) {
       const env = sb.doPost(buildPairRequest({ instanceId, pairingCode: code.replace('-', ''), secret, ts }));
       const body = parseBody(env);
       if (!body.ok) throw new Error(`pairing failed: ${body.error.code}`);
-      const client = {
-        instanceId, secret, account: body.result.account,
-        /** Sends a signed call. overrides: {ts, nonce, payload, sig, instanceId}. */
-        call(action, params, overrides = {}) {
-          const nonce = overrides.nonce || newNonce();
-          const req = buildCallRequest({
-            instanceId: overrides.instanceId || instanceId, secret, ts: overrides.ts === undefined ? clock.now : overrides.ts,
-            nonce, action, params, payload: overrides.payload, sig: overrides.sig
-          });
-          const envelope = sb.doPost(req);
-          const parsed = parseBody(envelope);
-          return { envelope, nonce, ...parsed, sigValid: verifyEnvelope(envelope, secret, nonce) };
-        }
-      };
-      return client;
+      return makeClient(instanceId, secret, body.result.account);
+    },
+    pairClientViaSetup({ token, instanceId = crypto.randomUUID(), instanceLabel } = {}) {
+      token = token || (ctx.ASMCP_SETUP_ && ctx.ASMCP_SETUP_.token) || newSecret();
+      if (!ctx.ASMCP_SETUP_) sb.setSetup({ server: 'local', token, expiresAt: clock.now + 1800000 });
+      const secret = newSecret();
+      const env = sb.doPost(buildSetupPairRequest({ instanceId, instanceLabel, secret, ts: clock.now, token }));
+      const body = parseBody(env);
+      if (!body.ok) throw new Error(`setup pairing failed: ${body.error.code}`);
+      return makeClient(instanceId, secret, body.result.account);
     }
   };
   return sb;
 }
 
-module.exports = { createSandbox, hmacHex, newSecret, newNonce, buildPairRequest, buildCallRequest, parseBody, verifyEnvelope };
+module.exports = { createSandbox, hmacHex, newSecret, newNonce, buildPairRequest, buildSetupPairRequest, buildCallRequest, parseBody, verifyEnvelope };

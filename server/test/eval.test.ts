@@ -6,12 +6,11 @@ import { AppsScriptGateway } from "../src/adapters/apps-script/gateway.js";
 import { EVAL_TIMEOUT_MS } from "../src/core/script/evaluator.js";
 import { DEFAULT_SCOPES, SCOPE_EVAL, SUPPORTED_SCOPES } from "../src/auth/scopes.js";
 import { renderConsentPage } from "../src/auth/consent-page.js";
-import { ConnectionManager } from "../src/connection/connection-manager.js";
 import { GatewayError } from "../src/core/sheets/gateway.js";
 import { createPublicApp } from "../src/http/public-app.js";
 import type { Logger } from "../src/log.js";
 import type { Harness } from "./helpers.js";
-import { authorizeForCode, FakeGateway, fullOAuth, makeHarness, pkcePair, tokenRequest } from "./helpers.js";
+import { accountLogin, authorizeForCode, fullOAuth, makeHarness, pkcePair, tokenRequest } from "./helpers.js";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -77,35 +76,28 @@ describe("script.eval scope: opt-in only", () => {
 
   it("PATs: script.eval is opt-in; a PAT without it does not gain it", async () => {
     h = await makeHarness();
-    const { token: plain } = await h.pats.create("plain", ["sheets.read", "sheets.write"]);
-    const { token: evalPat } = await h.pats.create("eval", ["sheets.read", "script.eval"]);
+    const { token: plain } = await h.pats.create(h.ownerId, h.connectionId, "plain", ["sheets.read", "sheets.write"]);
+    const { token: evalPat } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["sheets.read", "script.eval"]);
     expect((await h.provider.verifyAccessToken(plain)).scopes).toEqual(["sheets.read", "sheets.write"]);
     expect((await h.provider.verifyAccessToken(evalPat)).scopes).toEqual(["sheets.read", "script.eval"]);
-    await expect(h.pats.create("bad", ["script.exec"])).rejects.toThrow(/script\.eval/);
+    await expect(h.pats.create(h.ownerId, h.connectionId, "bad", ["script.exec"])).rejects.toThrow(/script\.eval/);
   });
 
-  it("the admin API creates a PAT with script.eval when asked", async () => {
+  it("the account API creates a PAT with script.eval when asked, bound to the user's connection", async () => {
     h = await makeHarness();
-    const login = await fetch(`${h.adminUrl}/api/login`, {
+    const { cookie, csrf } = await accountLogin(h, h.username, h.password);
+    const r = await fetch(`${h.publicUrl}/account/api/pats`, {
       method: "POST",
-      headers: { "content-type": "application/json", host: "admin.internal" },
-      body: JSON.stringify({ password: h.password }),
-    });
-    expect(login.status).toBe(200);
-    const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0]!;
-    const { csrfToken } = (await login.json()) as { csrfToken: string };
-    const r = await fetch(`${h.adminUrl}/api/pats`, {
-      method: "POST",
-      headers: { "content-type": "application/json", host: "admin.internal", cookie, "x-csrf-token": csrfToken },
-      body: JSON.stringify({ label: "eval", scopes: ["script.eval"] }),
+      headers: { "content-type": "application/json", cookie, "x-csrf-token": csrf },
+      body: JSON.stringify({ label: "eval", connectionId: h.connectionId, scopes: ["script.eval"] }),
     });
     expect(r.status).toBe(201);
-    expect(((await r.json()) as { pat: { scopes: string[] } }).pat.scopes).toEqual(["script.eval"]);
+    expect(((await r.json()) as { pat: { scopes: string[]; connectionId: string } }).pat).toMatchObject({ scopes: ["script.eval"], connectionId: h.connectionId });
   });
 });
 
 describe("consent page", () => {
-  const view = (scopes: string[]) => ({ clientName: "C", redirectHost: "localhost:9999", scopes, nonce: "n", action: "/oauth/consent" });
+  const view = (scopes: string[]) => ({ clientName: "C", redirectHost: "localhost:9999", scopes, nonce: "n", styleNonce: "s", action: "/oauth/consent", login: {} });
 
   it("shows a red warning when script.eval is requested, and not otherwise", () => {
     const withEval = renderConsentPage(view(["sheets.read", "script.eval"]));
@@ -144,7 +136,7 @@ describe("run_apps_script tool", () => {
   it("is rejected without the script.eval scope (OAuth token and PAT) and never reaches the evaluator", async () => {
     h = await makeHarness({ withEvaluator: true });
     const { tokens } = await fullOAuth(h); // default scopes
-    const { token: pat } = await h.pats.create("sheets only", ["sheets.read", "sheets.write"]);
+    const { token: pat } = await h.pats.create(h.ownerId, h.connectionId, "sheets only", ["sheets.read", "sheets.write"]);
     for (const token of [tokens.access_token, pat]) {
       const c = await mcpClient(h.publicUrl, token);
       const r = await c.callTool({ name: "run_apps_script", arguments: { code: "return 1;" } });
@@ -158,7 +150,7 @@ describe("run_apps_script tool", () => {
 
   it("is allowed with the scope: passes code and args, returns value, logs and duration", async () => {
     h = await makeHarness({ withEvaluator: true });
-    const { token } = await h.pats.create("eval", ["script.eval"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["script.eval"]);
     h.evaluator.handler = async (_code, args) => ({ value: { echo: args }, logs: ["l1", "l2"], durationMs: 12 });
     const c = await mcpClient(h.publicUrl, token);
     const r = await c.callTool({ name: "run_apps_script", arguments: { code: "return args;", args: { a: [1, 2] } } });
@@ -179,7 +171,7 @@ describe("run_apps_script tool", () => {
 
   it("is registered only when an evaluator is available", async () => {
     h = await makeHarness(); // no evaluator
-    const { token } = await h.pats.create("eval", ["sheets.read", "script.eval"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["sheets.read", "script.eval"]);
     let c = await mcpClient(h.publicUrl, token);
     expect((await c.listTools()).tools.map((t) => t.name)).not.toContain("run_apps_script");
     const r = await c.callTool({ name: "run_apps_script", arguments: { code: "return 1;" } }).catch((e: Error) => e);
@@ -188,7 +180,7 @@ describe("run_apps_script tool", () => {
     await h.close();
 
     h = await makeHarness({ withEvaluator: true });
-    const { token: t2 } = await h.pats.create("eval", ["script.eval"]);
+    const { token: t2 } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["script.eval"]);
     c = await mcpClient(h.publicUrl, t2);
     const tools = (await c.listTools()).tools;
     expect(tools).toHaveLength(9);
@@ -203,7 +195,7 @@ describe("run_apps_script tool", () => {
 
   it("maps EVAL_DISABLED to a message saying where to enable it, and EVAL_ERROR to its message plus logs", async () => {
     h = await makeHarness({ withEvaluator: true });
-    const { token } = await h.pats.create("eval", ["script.eval"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["script.eval"]);
     const c = await mcpClient(h.publicUrl, token);
     h.evaluator.handler = async () => {
       throw new GatewayError("EVAL_DISABLED", "Script evaluation is disabled.");
@@ -238,11 +230,11 @@ describe("run_apps_script tool", () => {
       warn: (event, fields) => lines.push({ level: "warn", event, fields }),
       error: (event, fields) => lines.push({ level: "error", event, fields }),
     };
-    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, service: h.service, evaluator: h.evaluator, trustProxy: false, logger });
+    const app = createPublicApp({ provider: h.provider, baseUrl: h.baseUrl, accounts: h.accounts, registry: h.registry, pats: h.pats, ipLimiter: h.ipLimiter, evaluatorAvailable: true, trustProxy: false, logger });
     const srv = app.listen(0, "127.0.0.1");
     await new Promise((r) => srv.once("listening", r));
     const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
-    const { token } = await h.pats.create("eval", ["script.eval"]);
+    const { token } = await h.pats.create(h.ownerId, h.connectionId, "eval", ["script.eval"]);
     const c = await mcpClient(base, token);
     await c.callTool({ name: "run_apps_script", arguments: { code: "return 'CODE-SECRET';", args: { k: "ARG-SECRET" } } });
     h.evaluator.handler = async () => {
@@ -262,38 +254,33 @@ describe("run_apps_script tool", () => {
   });
 });
 
-describe("connection manager", () => {
-  const setup = async (gw: FakeGateway) => {
+describe("connection registry: eval state", () => {
+  it("reports evalEnabled from the last ping (null when unknown) and forgets it when the connection is removed", async () => {
     h = await makeHarness();
-    await h.store.update((s) => {
-      s.link = { url: "https://script.google.com/macros/s/AK/exec", secret: "s".repeat(43), account: "me@example.com", pairedAt: 1 };
-    });
-    return new ConnectionManager({ store: h.store, instanceLabel: "t", gatewayFactory: () => gw });
-  };
-
-  it("reports evalEnabled from the last ping (null when unknown) and forgets it on unpair", async () => {
-    const gw = new FakeGateway();
-    const cm = await setup(gw);
-    expect(cm.status().evalEnabled).toBeNull();
-    gw.ping = () => Promise.resolve({ account: "me@example.com", backendVersion: "1", spreadsheetCount: 0, evalEnabled: true });
-    expect((await cm.ping()).evalEnabled).toBe(true);
-    gw.ping = () => Promise.resolve({ account: "me@example.com", backendVersion: "1", spreadsheetCount: 0, evalEnabled: false });
-    expect((await cm.ping()).evalEnabled).toBe(false);
+    const gw = h.gateway;
+    const id = h.connectionId;
+    const ping = (evalEnabled?: boolean) => () => Promise.resolve({ account: "me@example.com", backendVersion: "1", spreadsheetCount: 0, ...(evalEnabled === undefined ? {} : { evalEnabled }) });
+    expect(h.registry.getView(id)!.evalEnabled).toBeNull();
+    gw.ping = ping(true);
+    expect((await h.registry.ping(id)).evalEnabled).toBe(true);
+    gw.ping = ping(false);
+    expect((await h.registry.ping(id)).evalEnabled).toBe(false);
     gw.ping = () => Promise.reject(new GatewayError("INTERNAL", "down"));
-    expect((await cm.ping()).evalEnabled).toBeNull();
-    gw.ping = () => Promise.resolve({ account: "me@example.com", backendVersion: "1", spreadsheetCount: 0 }); // an older script
-    expect((await cm.ping()).evalEnabled).toBeNull();
-    gw.ping = () => Promise.resolve({ account: "me@example.com", backendVersion: "1", spreadsheetCount: 0, evalEnabled: true });
-    await cm.ping();
-    await cm.unpair();
-    expect(cm.status().evalEnabled).toBeNull();
+    expect((await h.registry.ping(id)).evalEnabled).toBeNull();
+    gw.ping = ping(); // an older script
+    expect((await h.registry.ping(id)).evalEnabled).toBeNull();
+    gw.ping = ping(true);
+    await h.registry.ping(id);
+    expect(await h.registry.remove(id, h.ownerId)).toBe(true);
+    expect(h.registry.getView(id)).toBeUndefined();
   });
 
-  it("its evaluator fails cleanly when not connected or when the backend cannot evaluate", async () => {
-    const cm = await setup(new FakeGateway()); // FakeGateway has no evaluate()
-    await expect(cm.evaluator.evaluate("return 1")).rejects.toMatchObject({ code: "UNKNOWN_ACTION" });
-    await cm.unpair();
-    await expect(cm.evaluator.evaluate("return 1")).rejects.toMatchObject({ code: "NOT_CONNECTED" });
+  it("its evaluator fails cleanly when the backend cannot evaluate, and a removed connection resolves to nothing", async () => {
+    h = await makeHarness(); // plain FakeGateway has no evaluate()
+    const rt = h.registry.resolve(h.connectionId, h.ownerId)!;
+    await expect(rt.evaluator.evaluate("return 1")).rejects.toMatchObject({ code: "UNKNOWN_ACTION" });
+    await h.registry.remove(h.connectionId, h.ownerId);
+    expect(h.registry.resolve(h.connectionId, h.ownerId)).toBeUndefined();
   });
 });
 

@@ -6,11 +6,13 @@ import {
   APPS_SCRIPT_URL_RE,
   PAIRING_ALPHABET,
   attemptPair,
+  attemptSetupPair,
+  buildSetupPairRequest,
   formatPairingCode,
   generatePairingCode,
   normalizePairingCode,
 } from "../src/adapters/apps-script/pairing.js";
-import { hmacHex, newNonce, newSecret, signCall, signPairAck, signResponse } from "../src/adapters/apps-script/signing.js";
+import { hmacHex, newNonce, newSecret, signCall, signPairAck, signResponse, signSetupProof } from "../src/adapters/apps-script/signing.js";
 import { GatewayError } from "../src/core/sheets/gateway.js";
 
 const SECRET = "A".repeat(43);
@@ -89,7 +91,7 @@ describe("AppsScriptClient response verification", () => {
   it("returns data for a correctly signed response", async () => {
     const s = fakeScript("good");
     const r = await new AppsScriptGateway(client(s.fetchImpl)).ping();
-    expect(r).toEqual({ account: "me@example.com", backendVersion: "3", spreadsheetCount: 2, evalEnabled: null });
+    expect(r).toMatchObject({ account: "me@example.com", backendVersion: "3", spreadsheetCount: 2, evalEnabled: null });
     expect(JSON.parse(s.seen[0]!.payload as string)).toEqual({ action: "ping", params: {} });
   });
 
@@ -147,7 +149,7 @@ describe("pairing", () => {
 
   it("accepts a valid proof", async () => {
     const r = await attemptPair({ ...base, fetchImpl: pairFetch((s, i, t) => manual(s, `v1\npair-ack\n${i}\n${t}`)) });
-    expect(r).toEqual({ status: "paired", account: "me@example.com" });
+    expect(r).toEqual({ status: "paired", account: "me@example.com", scriptId: null, scriptName: null });
   });
 
   it("rejects a wrong proof and a proof for another timestamp", async () => {
@@ -155,8 +157,46 @@ describe("pairing", () => {
     expect((await attemptPair({ ...base, fetchImpl: pairFetch((s, i, t) => manual(s, `v1\npair-ack\n${i}\n${t + 1}`)) })).status).toBe("bad_proof");
   });
 
-  it("maps PAIRING_NOT_READY and PAIRING_INVALID", async () => {
+  it("reads scriptId / scriptName from the pair result", async () => {
+    const f = (async (_u: string, init: RequestInit) => {
+      const req = JSON.parse(init.body as string) as { instanceId: string; ts: number; secret: string };
+      const result = { account: "me@example.com", scriptId: "SID1", scriptName: null, proof: manual(req.secret, `v1\npair-ack\n${req.instanceId}\n${req.ts}`) };
+      return new Response(JSON.stringify({ body: JSON.stringify({ ok: true, result }), sig: null }), { status: 200 });
+    }) as unknown as typeof fetch;
+    expect(await attemptPair({ ...base, fetchImpl: f })).toEqual({ status: "paired", account: "me@example.com", scriptId: "SID1", scriptName: null });
+  });
+
+  it("maps PAIRING_NOT_READY, PAIRING_INVALID, REQUEST_EXPIRED and LIMIT_EXCEEDED", async () => {
+    expect((await attemptPair({ ...base, fetchImpl: pairFetch(() => "", "REQUEST_EXPIRED") })).status).toBe("clock_skew");
+    expect((await attemptPair({ ...base, fetchImpl: pairFetch(() => "", "LIMIT_EXCEEDED") })).status).toBe("limit");
     expect((await attemptPair({ ...base, fetchImpl: pairFetch(() => "", "PAIRING_NOT_READY") })).status).toBe("not_ready");
     expect((await attemptPair({ ...base, fetchImpl: pairFetch(() => "", "PAIRING_INVALID") })).status).toBe("invalid");
+  });
+});
+
+describe("setup pair request (DESIGN.md 9.3)", () => {
+  const TOKEN = "T".repeat(43);
+
+  it("setupProof = HMAC(token as UTF-8 bytes, 'v1\\nsetup\\n' + instanceId + ts + secret)", () => {
+    const manualProof = createHmac("sha256", Buffer.from(TOKEN, "utf8")).update(`v1\nsetup\n${INSTANCE}\n42\n${SECRET}`, "utf8").digest("hex");
+    expect(signSetupProof(TOKEN, INSTANCE, 42, SECRET)).toBe(manualProof);
+    expect(signSetupProof(TOKEN, INSTANCE, 43, SECRET)).not.toBe(manualProof);
+    const req = buildSetupPairRequest({ instanceId: INSTANCE, instanceLabel: "x".repeat(100), secret: SECRET, token: TOKEN, ts: 42 });
+    expect(req).toEqual({ v: 1, kind: "pair", mode: "setup", instanceId: INSTANCE, instanceLabel: "x".repeat(64), secret: SECRET, ts: 42, setupProof: manualProof });
+    expect(JSON.stringify(req)).not.toContain(TOKEN); // the token itself never goes on the wire
+  });
+
+  it("attemptSetupPair sends it and verifies the pair-ack proof", async () => {
+    const seen: any[] = [];
+    const f = (async (_u: string, init: RequestInit) => {
+      const req = JSON.parse(init.body as string);
+      seen.push(req);
+      const proof = manual(req.secret, `v1\npair-ack\n${req.instanceId}\n${req.ts}`);
+      return new Response(JSON.stringify({ body: JSON.stringify({ ok: true, result: { account: "me@example.com", proof } }), sig: null }));
+    }) as unknown as typeof fetch;
+    const r = await attemptSetupPair({ url: "https://script.google.com/macros/s/a/exec", instanceId: INSTANCE, instanceLabel: "t", secret: SECRET, token: TOKEN, fetchImpl: f, now: () => 99 });
+    expect(r).toMatchObject({ status: "paired", account: "me@example.com" });
+    expect(seen[0]).toMatchObject({ kind: "pair", mode: "setup", ts: 99, setupProof: signSetupProof(TOKEN, INSTANCE, 99, SECRET) });
+    expect(seen[0].pairingCode).toBeUndefined();
   });
 });

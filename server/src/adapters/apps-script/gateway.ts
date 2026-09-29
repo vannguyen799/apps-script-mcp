@@ -55,13 +55,14 @@ export class AppsScriptGateway implements SheetsGateway, ScriptEvaluator {
   }
 
   async ping(): Promise<PingResult> {
-    const r = await this.run<{ account?: string; scriptVersion?: string | number; spreadsheetCount?: number; evalEnabled?: unknown }>("ping", {});
+    const r = await this.run<{ account?: string; scriptVersion?: string | number; spreadsheetCount?: number; evalEnabled?: unknown; scriptId?: unknown }>("ping", {});
     if (typeof r?.account !== "string") throw new GatewayError("INTERNAL", "Unexpected ping result.");
     return {
       account: r.account,
       backendVersion: r.scriptVersion === undefined ? null : String(r.scriptVersion),
       spreadsheetCount: Number(r.spreadsheetCount ?? 0),
       evalEnabled: typeof r.evalEnabled === "boolean" ? r.evalEnabled : null,
+      scriptId: typeof r.scriptId === "string" && r.scriptId !== "" ? r.scriptId : null,
     };
   }
 

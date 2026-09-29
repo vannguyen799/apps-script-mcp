@@ -38,17 +38,30 @@
   <h1>apps-script-mcp - Quản trị Apps Script</h1>
   <div id="msg" role="status"></div>
 
-  <section>
-    <h2>Trạng thái ghép nối</h2>
-    <div id="pairStatus" class="muted">Đang tải...</div>
-    <div class="row" style="margin-top:12px">
-      <button id="unpairBtn" class="danger" style="display:none">Hủy ghép nối</button>
+  <section id="setupNotice" style="display:none">
+    <h2 id="setupTitle"></h2>
+    <div id="setupBody"></div>
+    <div class="row" id="setupUrlRow" style="margin-top:8px;display:none">
+      <input type="text" id="setupUrl" readonly>
+      <button id="setupCopyBtn">Sao chép</button>
     </div>
   </section>
 
   <section>
+    <h2>Máy chủ MCP đã ghép nối</h2>
+    <div id="pairStatus" class="muted">Đang tải...</div>
+    <div class="table-wrap">
+      <table id="pairTable" style="display:none">
+        <thead><tr><th>Máy chủ</th><th>Ghép nối lúc</th><th></th></tr></thead>
+        <tbody id="pairRows"></tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin:8px 0 0">Một script có thể ghép nối với tối đa 20 máy chủ. Hủy một kết nối không ảnh hưởng các kết nối khác.</p>
+  </section>
+
+  <section>
     <h2>Nhập mã ghép nối</h2>
-    <p class="muted" style="margin-top:0">Nhập mã hiển thị trong trang quản trị của máy chủ MCP (dạng XXXX-XXXX). Mã có hiệu lực 10 phút.</p>
+    <p class="muted" style="margin-top:0">Dùng khi script đã cài sẵn và bạn muốn kết nối thêm một máy chủ MCP khác: nhập mã hiển thị trong trang quản trị của máy chủ đó (dạng XXXX-XXXX). Mã có hiệu lực 10 phút.</p>
     <div class="row">
       <input type="text" id="codeInput" placeholder="XXXX-XXXX" maxlength="12" autocomplete="off" spellcheck="false">
       <button id="codeBtn" class="primary">Xác nhận mã</button>
@@ -152,23 +165,63 @@
   }
 
   function render() {
-    var ps = $('pairStatus');
-    ps.textContent = '';
-    if (state.paired) {
-      var b = el('span', 'Đã ghép nối', 'badge ok');
-      ps.appendChild(b);
-      ps.appendChild(el('div', 'Máy chủ: ' + (state.instanceLabel || '(không tên)')));
-      ps.appendChild(el('div', 'Ghép nối lúc: ' + fmtTime(state.pairedAt), 'muted'));
-      ps.appendChild(el('div', 'Tài khoản Google: ' + state.account, 'muted'));
-    } else {
-      ps.appendChild(el('span', 'Chưa ghép nối', 'badge'));
-    }
-    $('unpairBtn').style.display = state.paired ? '' : 'none';
+    renderPairings();
+    renderSetup();
     $('pendingInfo').textContent = state.pendingExpiresAt
       ? 'Đang chờ máy chủ xác nhận mã (hết hạn lúc ' + fmtTime(state.pendingExpiresAt) + ').' : '';
     $('urlInput').value = state.webAppUrl || '';
     renderSheets();
     renderEval();
+  }
+
+  function renderPairings() {
+    var list = state.pairings || [];
+    var ps = $('pairStatus');
+    ps.textContent = '';
+    ps.appendChild(el('span', list.length ? 'Đã ghép nối (' + list.length + ')' : 'Chưa ghép nối', 'badge' + (list.length ? ' ok' : '')));
+    if (list.length) ps.appendChild(el('div', 'Tài khoản Google: ' + state.account, 'muted'));
+    $('pairTable').style.display = list.length ? '' : 'none';
+    var body = $('pairRows');
+    body.textContent = '';
+    list.forEach(function (p) {
+      var tr = document.createElement('tr');
+      var name = el('td');
+      name.appendChild(el('div', p.instanceLabel || '(không tên)'));
+      name.appendChild(el('div', p.instanceId, 'mono muted'));
+      var when = el('td', fmtTime(p.pairedAt));
+      var act = el('td', null, 'actions');
+      var btn = el('button', 'Hủy ghép nối', 'danger');
+      btn.onclick = function () {
+        if (!confirm('Hủy ghép nối "' + (p.instanceLabel || p.instanceId) + '"? Máy chủ đó sẽ không truy cập được nữa cho đến khi ghép nối lại.')) return;
+        run('admin_unpair', [p.instanceId], function (res) {
+          state.pairings = res.pairings; state.paired = res.pairings.length > 0; renderPairings(); msg('Đã hủy ghép nối.', 'ok');
+        });
+      };
+      act.appendChild(btn);
+      tr.appendChild(name); tr.appendChild(when); tr.appendChild(act);
+      body.appendChild(tr);
+    });
+  }
+
+  function renderSetup() {
+    var s = state.setup;
+    var box = $('setupNotice');
+    if (!s || s.status === 'expired') { box.style.display = 'none'; return; }
+    box.style.display = '';
+    var ready = s.status === 'ready';
+    $('setupTitle').textContent = ready ? 'Sẵn sàng kết nối' : (s.status === 'connected' ? 'Đã kết nối' : 'Mã cài đặt đã bị hủy');
+    var body = $('setupBody');
+    body.textContent = '';
+    if (ready) {
+      body.appendChild(el('p', 'Script này đã sẵn sàng kết nối với ' + (s.server || 'máy chủ MCP') +
+        '. Quay lại trang MCP và dán URL web app.', null));
+      $('setupUrl').value = state.webAppUrl || '';
+    } else if (s.status === 'connected') {
+      body.appendChild(el('p', 'Đã kết nối', 'muted'));
+    } else {
+      body.appendChild(el('p', 'Có quá nhiều lần thử sai. Hãy tạo Code.gs mới từ trang MCP.', 'muted'));
+    }
+    $('setupUrlRow').style.display = ready ? '' : 'none';
   }
 
   function renderEval() {
@@ -260,10 +313,6 @@
       load();
     });
   };
-  $('unpairBtn').onclick = function () {
-    if (!confirm('Hủy ghép nối? Máy chủ MCP sẽ không truy cập được nữa cho đến khi ghép nối lại.')) return;
-    run('admin_unpair', [], function () { msg('Đã hủy ghép nối.', 'ok'); load(); });
-  };
   $('addBtn').onclick = function () {
     run('admin_addSpreadsheet', [$('addInput').value, $('addAlias').value, $('addAccess').value], function (res) {
       $('addInput').value = ''; $('addAlias').value = '';
@@ -280,15 +329,16 @@
     }, renderEval);
   };
   $('auditBtn').onclick = loadAudit;
-  $('copyBtn').onclick = function () {
-    var input = $('urlInput');
+  function copyFrom(input) {
     var done = function () { msg('Đã sao chép URL.', 'ok'); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(input.value).then(done, function () { input.select(); document.execCommand('copy'); done(); });
     } else {
       input.select(); document.execCommand('copy'); done();
     }
-  };
+  }
+  $('copyBtn').onclick = function () { copyFrom($('urlInput')); };
+  $('setupCopyBtn').onclick = function () { copyFrom($('setupUrl')); };
   load();
   loadAudit();
 })();

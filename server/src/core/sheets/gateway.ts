@@ -76,6 +76,8 @@ export interface PingResult {
   spreadsheetCount: number;
   /** Whether the owner enabled script evaluation; null when the backend does not say. */
   evalEnabled?: boolean | null;
+  /** Stable id of the Apps Script project, when the backend reports one. */
+  scriptId?: string | null;
 }
 
 export interface ReadRequest {

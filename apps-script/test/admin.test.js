@@ -27,7 +27,7 @@ test('owner gate rejects an anonymous caller (empty active email) on every entry
   const denied = (fn) => assert.throws(fn, /ACCESS_DENIED/);
   denied(() => sb.ctx.admin_getState());
   denied(() => sb.ctx.admin_submitPairingCode('ABCD-2345'));
-  denied(() => sb.ctx.admin_unpair());
+  denied(() => sb.ctx.admin_unpair('x'));
   denied(() => sb.ctx.admin_addSpreadsheet('x'.repeat(30), 'a', 'read'));
   denied(() => sb.ctx.admin_updateSpreadsheet('id', 'a', 'read'));
   denied(() => sb.ctx.admin_removeSpreadsheet('id'));
@@ -66,21 +66,29 @@ test('admin_getState reports pairing and never leaks the secret', () => {
   const c = sb.pairClient('EFGH-2345');
   const st = sb.ctx.admin_getState();
   assert.equal(st.paired, true);
+  assert.equal(st.pairings.length, 1);
+  assert.equal(st.pairings[0].instanceId, c.instanceId);
+  assert.deepEqual(Object.keys(st.pairings[0]).sort(), ['instanceId', 'instanceLabel', 'pairedAt']);
   assert.equal(st.pendingExpiresAt, null);
   assert.equal(st.webAppUrl, 'https://script.google.com/macros/s/AKx/exec');
   assert.equal(st.account, 'owner@example.com');
-  assert.ok(st.pairedAt);
+  assert.ok(st.pairings[0].pairedAt);
   assert.equal(JSON.stringify(st).includes(c.secret), false);
 });
 
-test('admin_unpair removes the pairing and any pending code; calls then fail', () => {
+test('admin_unpair(instanceId) removes that pairing only; calls then fail for it', () => {
   const sb = createSandbox();
   const c = sb.pairClient();
-  sb.enterPairingCode('EFGH-2345');
-  sb.ctx.admin_unpair();
-  assert.equal(sb.ctx.admin_getState().paired, false);
-  assert.equal(sb.props.has('asmcp.pairing.pending'), false);
+  const d = sb.pairClient('EFGH-2345');
+  const r = sb.ctx.admin_unpair(c.instanceId);
+  assert.deepEqual(Array.from(r.pairings, (p) => p.instanceId), [d.instanceId]);
+  assert.equal(sb.ctx.admin_getState().paired, true);
   assert.equal(c.call('ping').error.code, 'UNAUTHENTICATED');
+  assert.equal(d.call('ping').ok, true);
+  assert.throws(() => sb.ctx.admin_unpair(c.instanceId), /Không tìm thấy/);
+  assert.throws(() => sb.ctx.admin_unpair(), /Thiếu/);
+  sb.ctx.admin_unpair(d.instanceId);
+  assert.equal(sb.ctx.admin_getState().paired, false);
 });
 
 test('allowlist: add by URL and by ID, edit, remove', () => {

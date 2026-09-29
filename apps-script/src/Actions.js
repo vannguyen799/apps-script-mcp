@@ -162,6 +162,7 @@ function cellValueOut_(v) {
 function actionPing_() {
   return {
     account: Session.getEffectiveUser().getEmail(),
+    scriptId: getScriptId_(),
     scriptVersion: SCRIPT_VERSION_,
     spreadsheetCount: getAllowlist_().length,
     evalEnabled: isEvalEnabled_()

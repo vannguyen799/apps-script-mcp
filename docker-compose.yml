@@ -3,7 +3,9 @@ services:
     # Prebuilt multi-arch image from GHCR (edge = main branch, x.y.z / latest = releases).
     # Building from source instead: docker compose up -d --build
     image: ghcr.io/vannguyen799/apps-script-mcp:${ASMCP_TAG:-edge}
-    build: ./server
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     pull_policy: missing
     container_name: apps-script-mcp
     restart: unless-stopped

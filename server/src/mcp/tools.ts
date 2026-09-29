@@ -2,10 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { SCOPE_EVAL, SCOPE_READ, SCOPE_WRITE } from "../auth/scopes.js";
-import type { ScriptEvaluator } from "../core/script/evaluator.js";
 import { EVAL_MAX_CODE_CHARS } from "../core/script/evaluator.js";
 import { GatewayError } from "../core/sheets/gateway.js";
-import type { SheetsService } from "../core/sheets/sheets.service.js";
+import type { ConnectionRuntime, ResolveConnection } from "../connection/connection-registry.js";
+import { CONNECTION_REMOVED_MESSAGE } from "../connection/connection-registry.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 
@@ -29,10 +29,15 @@ const batchOp = z.discriminatedUnion("type", [
 ]);
 
 export interface ToolDeps {
-  service: SheetsService;
-  /** Opt-in: run_apps_script is registered only when an evaluator is provided (DESIGN.md section 8.2). */
-  evaluator?: ScriptEvaluator;
+  /** DESIGN.md 9.4: the only way to reach Apps Script. Called with the ids from the token's AuthInfo, never from tool input. */
+  resolve: ResolveConnection;
+  /** Opt-in: run_apps_script is registered only when the backend can evaluate (DESIGN.md section 8.2). */
+  evaluatorAvailable?: boolean;
   logger?: Logger;
+}
+
+interface ToolExtra {
+  authInfo?: { scopes: string[]; extra?: Record<string, unknown> };
 }
 
 function ok(data: unknown): CallToolResult {
@@ -58,18 +63,28 @@ function gatewayErrorText(e: GatewayError): string {
 /** Registers the 8 tools of DESIGN.md section 6, plus run_apps_script when an evaluator is present. Scope is enforced per call from the request's AuthInfo. */
 export function registerTools(server: McpServer, deps: ToolDeps): void {
   const log = deps.logger ?? nullLogger;
-  const svc = deps.service;
 
   const guarded =
-    <A>(tool: string, scope: string, fn: (args: A) => Promise<unknown>) =>
-    async (args: A, extra: { authInfo?: { scopes: string[] } }): Promise<CallToolResult> => {
+    <A>(tool: string, scope: string, fn: (args: A, rt: ConnectionRuntime) => Promise<unknown>) =>
+    async (args: A, extra: ToolExtra): Promise<CallToolResult> => {
       if (!extra.authInfo?.scopes.includes(scope)) {
         log.warn("tool_denied", { tool, resultCode: "INSUFFICIENT_SCOPE" });
         return fail(`INSUFFICIENT_SCOPE: the tool "${tool}" requires the "${scope}" scope, which this token does not have. Ask the owner to reconnect or issue a token with that scope.`);
       }
+      const userId = extra.authInfo.extra?.userId;
+      const connectionId = extra.authInfo.extra?.connectionId;
+      if (typeof userId !== "string" || typeof connectionId !== "string" || userId === "" || connectionId === "") {
+        log.warn("tool_denied", { tool, resultCode: "NO_CONNECTION" });
+        return fail(`CONNECTION_REMOVED: ${CONNECTION_REMOVED_MESSAGE}`);
+      }
+      const rt = deps.resolve(connectionId, userId);
+      if (!rt) {
+        log.info("tool_call", { tool, resultCode: "CONNECTION_REMOVED" });
+        return fail(`CONNECTION_REMOVED: ${CONNECTION_REMOVED_MESSAGE}`);
+      }
       const t0 = Date.now();
       try {
-        const r = await fn(args);
+        const r = await fn(args, rt);
         log.info("tool_call", { tool, durationMs: Date.now() - t0, resultCode: "OK" });
         return ok(r);
       } catch (e) {
@@ -91,7 +106,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded("list_spreadsheets", SCOPE_READ, () => svc.listSpreadsheets().then((spreadsheets) => ({ spreadsheets }))),
+    guarded("list_spreadsheets", SCOPE_READ, (_a: Record<string, never>, rt) => rt.service.listSpreadsheets().then((spreadsheets) => ({ spreadsheets }))),
   );
 
   server.registerTool(
@@ -102,7 +117,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: { spreadsheet },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded("list_sheets", SCOPE_READ, (a: { spreadsheet: string }) => svc.listSheets(a.spreadsheet)),
+    guarded("list_sheets", SCOPE_READ, (a: { spreadsheet: string }, rt) => rt.service.listSheets(a.spreadsheet)),
   );
 
   server.registerTool(
@@ -113,7 +128,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: { spreadsheet },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded("get_metadata", SCOPE_READ, (a: { spreadsheet: string }) => svc.getMetadata(a.spreadsheet)),
+    guarded("get_metadata", SCOPE_READ, (a: { spreadsheet: string }, rt) => rt.service.getMetadata(a.spreadsheet)),
   );
 
   server.registerTool(
@@ -129,8 +144,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    guarded("read_range", SCOPE_READ, (a: { spreadsheet: string; range: string; render?: "FORMATTED" | "UNFORMATTED" | "FORMULA" }) =>
-      svc.readRange(a.spreadsheet, a.range, a.render),
+    guarded("read_range", SCOPE_READ, (a: { spreadsheet: string; range: string; render?: "FORMATTED" | "UNFORMATTED" | "FORMULA" }, rt) =>
+      rt.service.readRange(a.spreadsheet, a.range, a.render),
     ),
   );
 
@@ -153,8 +168,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     guarded(
       "search",
       SCOPE_READ,
-      (a: { spreadsheet: string; query: string; sheet?: string; match_case?: boolean; match_entire_cell?: boolean; limit?: number }) =>
-        svc.search(a.spreadsheet, {
+      (a: { spreadsheet: string; query: string; sheet?: string; match_case?: boolean; match_entire_cell?: boolean; limit?: number }, rt) =>
+        rt.service.search(a.spreadsheet, {
           query: a.query,
           ...(a.sheet !== undefined ? { sheet: a.sheet } : {}),
           ...(a.match_case !== undefined ? { matchCase: a.match_case } : {}),
@@ -173,8 +188,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: { spreadsheet, range: z.string().min(1).describe(rangeDoc), values: grid, allow_formulas: allowFormulas },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
-    guarded("write_range", SCOPE_WRITE, (a: { spreadsheet: string; range: string; values: (string | number | boolean | null)[][]; allow_formulas?: boolean }) =>
-      svc.writeRange(a.spreadsheet, a.range, a.values, a.allow_formulas ?? false),
+    guarded("write_range", SCOPE_WRITE, (a: { spreadsheet: string; range: string; values: (string | number | boolean | null)[][]; allow_formulas?: boolean }, rt) =>
+      rt.service.writeRange(a.spreadsheet, a.range, a.values, a.allow_formulas ?? false),
     ),
   );
 
@@ -187,8 +202,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: { spreadsheet, sheet: z.string().min(1).describe("Sheet (tab) name, e.g. Sheet1."), rows: grid, allow_formulas: allowFormulas },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    guarded("append_rows", SCOPE_WRITE, (a: { spreadsheet: string; sheet: string; rows: (string | number | boolean | null)[][]; allow_formulas?: boolean }) =>
-      svc.appendRows(a.spreadsheet, a.sheet, a.rows, a.allow_formulas ?? false),
+    guarded("append_rows", SCOPE_WRITE, (a: { spreadsheet: string; sheet: string; rows: (string | number | boolean | null)[][]; allow_formulas?: boolean }, rt) =>
+      rt.service.appendRows(a.spreadsheet, a.sheet, a.rows, a.allow_formulas ?? false),
     ),
   );
 
@@ -201,13 +216,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: { spreadsheet, operations: z.array(batchOp).min(1).max(50), allow_formulas: allowFormulas },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
-    guarded("batch_update", SCOPE_WRITE, (a: { spreadsheet: string; operations: z.infer<typeof batchOp>[]; allow_formulas?: boolean }) =>
-      svc.batchUpdate(a.spreadsheet, a.operations, a.allow_formulas ?? false),
+    guarded("batch_update", SCOPE_WRITE, (a: { spreadsheet: string; operations: z.infer<typeof batchOp>[]; allow_formulas?: boolean }, rt) =>
+      rt.service.batchUpdate(a.spreadsheet, a.operations, a.allow_formulas ?? false),
     ),
   );
 
-  const evaluator = deps.evaluator;
-  if (evaluator) {
+  if (deps.evaluatorAvailable) {
     server.registerTool(
       "run_apps_script",
       {
@@ -226,7 +240,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         },
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       },
-      guarded("run_apps_script", SCOPE_EVAL, (a: { code: string; args?: unknown }) => evaluator.evaluate(a.code, a.args)),
+      guarded("run_apps_script", SCOPE_EVAL, (a: { code: string; args?: unknown }, rt) => rt.evaluator.evaluate(a.code, a.args)),
     );
   }
 }

@@ -259,3 +259,154 @@ evaluated code; the only capability boundary is the OAuth scopes the owner puts 
   `EVAL_DISABLED` maps to a clear message telling the user where to enable it.
 - The admin UI status shows "Chạy script: bật/tắt" from the last ping.
 - Logs: action name, durationMs, resultCode only. Never code, args, values or eval error messages.
+
+## 9. Accounts, multiple Apps Script connections, one-paste setup
+
+Goals:
+- Only accounts on this server can connect Claude, even on a public host.
+- One server can hold many Apps Script **connections** (each = one deployed script = one Google account).
+- A connection is paired once and then **picked** on later OAuth connects, never re-paired.
+- A new script can be installed by pasting one personalized file. The user types no codes.
+
+This section supersedes the single-link parts of §3.1, §4.2, §5.2 and §7 where they conflict.
+
+### 9.1 Accounts
+- `users`: `{id, username, passwordHash (scrypt as §3.1), role: "owner"|"member", createdAt}`. Usernames are
+  `^[a-z0-9._-]{3,32}$`, stored lowercase.
+- First-run setup (admin UI, setup token as before) now creates the **owner** account: username (default `admin`) + password.
+- **Invites.** The owner creates an invite in the admin UI:
+  - random 32 bytes; only the hash is stored; TTL 7 days; single use.
+  - The link is `<publicBase>/account/invite#<token>`. The fragment keeps the token out of logs.
+  - The invite page reads the fragment, asks for a username and password, and creates a `member`. The owner can delete members.
+- **Public session** (port 8787, needed for consent and `/account`):
+  - cookie `asmcp_sess`: random 32 bytes; only the hash is persisted with `userId`, `createdAt`, `expiresAt` (30 days).
+  - Flags: `HttpOnly; SameSite=Lax; Path=/`, plus `Secure` when the public base is https. Lax is required because the
+    OAuth redirect from Claude is a cross-site top-level GET.
+- **Public login.** `POST /account/login` with username + password.
+  - Rate limit: 5 failures / 15 min per IP **and** per username.
+  - Same error message for an unknown user and a wrong password; constant-time with a dummy scrypt for unknown users.
+- **CSRF.** Every public POST form carries a per-session CSRF token field. `Origin`, when present, must equal the
+  public base origin.
+- `POST /account/logout` removes the session. "Đăng xuất mọi nơi" removes all of that user's sessions.
+
+### 9.2 Connections (server side)
+- `connections`: `{id, userId, label, url, instanceId, secret, account, pairedAt, lastOkAt, lastError, evalEnabled}`.
+  - `instanceId` is a fresh UUID **per connection**. That lets one script pair with several servers and one server
+    pair with several scripts.
+  - A user sees and uses only their own connections. The owner can see and remove all of them in the admin UI.
+- **Pending connection**, created by "Thêm Apps Script":
+  - fields: `{id, userId, instanceId, secret, setupToken, expiresAt: now+30min, code?, url?}`;
+  - kept in memory plus state, pruned when expired.
+- **Two ways to pair a pending connection:**
+  1. **New script: one paste.**
+     - The page offers "Tải / Copy Code.gs": the bundle with the line `var ASMCP_SETUP_ = null;` replaced by
+       `var ASMCP_SETUP_ = {"server":"<publicBase or 'local'>","token":"<setupToken>","expiresAt":<ms>};`.
+     - The page links to `https://script.new`, with the steps: paste → Deploy → Web app (Execute as Me, Access Anyone)
+       → Authorize → copy the web app URL → paste it here.
+     - The server then sends a **setup pair** request (§9.3) until success or expiry.
+  2. **Already-installed script** (any version with §9.3 support). The user pastes the web app URL. The server shows
+     an 8-char code as in §4.2, and the user enters it on the script's admin page. Polling as in §4.2.
+- The Code.gs bundle ships inside the Docker image at `/app/apps-script/Code.gs`:
+  - the Docker build context becomes the repo root;
+  - `server/Dockerfile` copies `apps-script/Code.gs`;
+  - the server reads it at startup via an injected config path.
+  - If it is missing, option 1 is hidden.
+- Health: per-connection ping every 5 min. Status per connection is `connected` or `error` (with a message).
+- `/account` page (public, logged in):
+  - my connections: label (editable), Google account, status, eval state, remove;
+  - "Thêm Apps Script";
+  - my PATs: create (choose connection + scopes, shown once), list, revoke;
+  - logout / logout everywhere.
+  Vietnamese UI, same visual style as the admin UI.
+- Admin UI (8788, owner): server settings, users + invites, all connections (read, remove), all grants and PATs
+  (revoke), plus the same "Thêm Apps Script" flow for the owner. The old single-link pairing UI is removed.
+
+### 9.3 Apps Script side
+- Multiple pairings:
+  - `asmcp.pairings` = `{<instanceId>: {instanceLabel, secret, pairedAt}}`, max 20; adding a 21st → `LIMIT_EXCEEDED`.
+  - A legacy `asmcp.pairing` is migrated into the map on first read.
+  - Call verification (§4.3 step 2) looks up the pairing by `instanceId`.
+  - The admin page lists pairings, each with its own "Hủy ghép nối".
+- Code pairing (§4.2) is unchanged except that success **adds** to the map. The same `instanceId` re-pairing replaces
+  its own entry.
+- **Setup pair.** Request:
+  ```json
+  {"v":1,"kind":"pair","mode":"setup","instanceId","instanceLabel","secret","ts","setupProof"}
+  ```
+  where `setupProof = HMAC(token, "v1\nsetup\n" + instanceId + "\n" + ts + "\n" + secret)`. The HMAC key is the UTF-8
+  bytes of the token string, as in §4.1.
+  Apps Script accepts it iff all of these hold:
+  - `ASMCP_SETUP_` is a non-null object with a string `token` of 43 b64url chars;
+  - `now < ASMCP_SETUP_.expiresAt`;
+  - `|now - ts| ≤ 300000`;
+  - `sha256hex("asmcp-setup-v1:" + token)` is not in `asmcp.setupConsumed` (a list, keep the last 20);
+  - the proof matches in constant time.
+  On success it stores the pairing, appends the token hash to `setupConsumed`, and responds exactly like §4.2
+  (`{account, proof}`, `sig:null`). Failures:
+  - `PAIRING_NOT_READY`: no setup block or expired;
+  - `PAIRING_INVALID`: bad proof or consumed. Five invalid setup attempts → store the token hash as consumed (burned).
+- `ASMCP_SETUP_` is declared once in the bundle header section as `var ASMCP_SETUP_ = null;`, exactly that text on its
+  own line. `src/` gets a `Setup.js` holding that line, so tests can override the value.
+- Admin page:
+  - when `ASMCP_SETUP_` is present and not consumed, show "Script này đã sẵn sàng kết nối với <server>. Quay lại trang
+    MCP và dán URL web app." with the URL and a copy button;
+  - after it is consumed, show "Đã kết nối".
+
+### 9.4 OAuth consent (replaces the admin-password consent of §3.2)
+`/authorize` → consent page:
+1. Not logged in → an inline login form (§9.1) → back to the same consent (nonce preserved).
+2. Logged in:
+   - a radio list of **my** connections (label, Google account, status). The last used one is preselected;
+   - "Thêm Apps Script mới", which opens the pending-connection flow in the same tab and returns here. The consent
+     nonce's TTL extends to 30 min while in that flow;
+   - scopes, with the red eval warning when `script.eval` is requested;
+   - Approve / Deny.
+3. Approve re-checks that the connection belongs to the session user. The grant stores `{userId, connectionId}`.
+   Access/refresh tokens inherit them.
+- Zero connections → the page goes straight to "Thêm Apps Script".
+- PATs store `{userId, connectionId, scopes}`.
+- `AuthInfo.extra = {userId, connectionId}`. Every tool call resolves its Apps Script client and SheetsService **only**
+  from `connectionId`, with per-connection caches. A connection that has been removed → the tool error "Kết nối Apps
+  Script đã bị xóa, hãy kết nối lại".
+- **Tenant isolation is a hard invariant.** No code path may take a connection id from tool input.
+
+### 9.5 State migration
+State gets `version: 2`. Migrating a v1 file:
+- admin password → owner user `admin`;
+- the single link → a connection owned by the owner (label = account email);
+- existing grants and PATs → bound to that connection;
+- a pending single-link pairing is dropped.
+
+### 9.6 Identifying a script
+Email is a display label, never a key: one Google account can own several scripts.
+- Pair responses (code and setup) return `{account, scriptId, scriptName, proof}`.
+  - `scriptId` is `ScriptApp.getScriptId()`, which is stable for the life of the project.
+  - `scriptName` may be null.
+- `ping` also returns `scriptId`.
+- The server treats `(userId, scriptId)` as unique. When a pairing completes for a script the user already has, the
+  existing connection is updated in place: `url`, `instanceId`, `secret`, `account`. The `connectionId` is kept, so
+  grants, tokens and PATs keep working. This also covers a new deployment whose URL has changed.
+- Different users may connect the same script.
+- A migrated v1 connection gets its `scriptId` from the next ping.
+
+### 9.7 Server implementation notes
+Where the server refines §9 (behaviour is otherwise as written above):
+- **Migration keeps the v1 `instanceId`** for the migrated connection (the script recorded its pairing under it), instead of a
+  fresh UUID. New connections get a fresh one. The untouched v1 file is kept as `state.json.v1.bak`. With no link there is
+  nothing to bind, so v1 grants, tokens and PATs are dropped.
+- **Pending connection** also stores `mode` (`setup`|`code`) and `codeExpiresAt` (10 min inside the 30). Before a URL is
+  pasted there is no mode. Polling covers both modes; a setup pair that answers `PAIRING_INVALID` is fatal (the script burns the
+  token), `REQUEST_EXPIRED` is shown as a clock-skew note, `LIMIT_EXCEEDED` as "20 kết nối".
+- **Sessions:** the per-session CSRF token is derived from the cookie value (`HMAC(cookie, "asmcp-csrf-v1")`), so nothing but
+  the cookie hash is stored. Login and invite-accept (no session yet) rely on Origin plus JSON-only content type; the consent
+  login form uses the consent nonce.
+- **Origin check:** an `Origin` equal to the public base origin passes. Additionally it passes when no base is configured, or
+  when the request's own Host is loopback and equals the Origin (using `/account` on localhost while the base is a tunnel URL).
+- **Limits:** rate-limit counters are 5 failures / 15 min, per IP (`ip:`, `invite:` and `setup:` keys) and per username. A
+  success resets only the username counter. At most 5 pending connections and 20 connections per user.
+- **Consent:** `GET /oauth/consent?nonce=` re-renders the same step (used to come back from the add flow); the nonce is only
+  consumed by Approve or Deny. Approve records `lastConnectionId` on the user (the preselected one next time).
+- **Removal:** deleting a connection keeps its grants, tokens and PATs (tools answer with the removal message); deleting a
+  member removes everything of theirs.
+- **Personalised Code.gs:** read once at startup from `APPS_SCRIPT_BUNDLE_PATH` (default `/app/apps-script/Code.gs`). It must
+  contain the line `var ASMCP_SETUP_ = null;` exactly once, otherwise option 1 is hidden and nothing is served (fail closed).
