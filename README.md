@@ -45,7 +45,7 @@ Muốn nâng cấp, chạy lại đúng dòng đó; dữ liệu (pairing, mật 
 <summary>Cách khác: bấm trên giao diện Docker Desktop, hoặc dùng docker compose</summary>
 
 **Docker Desktop:**
-1. Tìm `vannguyen799/apps-script-mcp` và bấm **Run**.
+1. Tìm `kortisol/apps-script-mcp` và bấm **Run**.
 2. Mở **Optional settings** và điền:
    - Ports: `8787` → `8787`, `8788` → `8788`.
    - Volumes: tên `asmcp-data`, đường dẫn trong container là `/data`.
@@ -175,7 +175,7 @@ cd server && npm ci && npm run build && npm test    # server, gồm test chéo v
 docker compose up -d --build                        # build image từ source
 ```
 
-Image được build tự động lên `ghcr.io/vannguyen799/apps-script-mcp`, và lên Docker Hub `vannguyen799/apps-script-mcp` khi repo có secret
+Image được build tự động lên `ghcr.io/vannguyen799/apps-script-mcp`, và lên Docker Hub `kortisol/apps-script-mcp` khi repo có secret
 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` (`edge` từ `main`; `x.y.z` / `latest` khi push tag `vX.Y.Z`).
 
 Kiến trúc: tầng tool/business chỉ phụ thuộc vào port `SheetsGateway`. Apps Script chỉ là một adapter, nên sau này có

@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/s
 Or run it yourself:
 ```bash
 docker run -d --name apps-script-mcp --restart unless-stopped \
-  -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data vannguyen799/apps-script-mcp
+  -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data kortisol/apps-script-mcp
 ```
 
 - `8787`: the MCP endpoint (`/mcp`) plus OAuth. This is the only port to expose through a tunnel.
