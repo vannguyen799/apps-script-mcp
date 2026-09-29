@@ -33,6 +33,8 @@ const CONSENT_TTL_MS = 10 * 60_000;
 /** While the user is in the "add an Apps Script" flow the consent nonce lives this long (DESIGN.md 9.4). */
 export const CONSENT_ADD_FLOW_TTL_MS = 30 * 60_000;
 const MAX_CLIENTS = 500;
+/** Registration is unauthenticated and every client is persisted: keeps 500 clients from bloating the state. */
+export const MAX_CLIENT_METADATA_CHARS = 8192;
 export const CONSENT_PATH = "/oauth/consent";
 
 /** What the consent page needs to know about connections (a subset of ConnectionRegistry). */
@@ -108,6 +110,7 @@ export class GsmcpOAuthProvider implements OAuthServerProvider {
   readonly clientsStore: OAuthRegisteredClientsStore = {
     getClient: (id) => this.store.state.oauth.clients[id] as OAuthClientInformationFull | undefined,
     registerClient: async (client) => {
+      if (JSON.stringify(client).length > MAX_CLIENT_METADATA_CHARS) throw new InvalidClientMetadataError("client metadata is too large");
       const uris = client.redirect_uris.map(String);
       if (uris.length === 0 || uris.length > 10) throw new InvalidClientMetadataError("redirect_uris must contain 1-10 entries");
       for (const u of uris) {

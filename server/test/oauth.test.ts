@@ -91,6 +91,17 @@ describe("dynamic client registration", () => {
     expect((await reg(["myapp://cb"])).status).toBe(400);
     expect((await reg(["https://ok.example.com/cb", "http://evil.example.com/cb"])).status).toBe(400);
   });
+  it("rejects oversized client metadata without storing it (unauthenticated state bloat)", async () => {
+    const before = Object.keys(h.store.state.oauth.clients).length;
+    const r = await fetch(`${h.publicUrl}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: ["https://a.example.com/cb"], client_name: "c", software_statement: "A".repeat(90_000) }),
+    });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toBe("invalid_client_metadata");
+    expect(Object.keys(h.store.state.oauth.clients)).toHaveLength(before);
+  });
   it("always registers public clients (no secret stored or returned)", async () => {
     const r = (await (await reg(["https://a.example.com/cb"])).json()) as Record<string, unknown>;
     expect(r.client_secret).toBeUndefined();
