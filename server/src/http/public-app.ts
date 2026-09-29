@@ -4,7 +4,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import { CONSENT_PATH, GsmcpOAuthProvider } from "../auth/oauth-provider.js";
-import { SUPPORTED_SCOPES } from "../auth/scopes.js";
+import { ADVERTISED_SCOPES } from "../auth/scopes.js";
+import type { ScriptEvaluator } from "../core/script/evaluator.js";
 import type { SheetsService } from "../core/sheets/sheets.service.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
@@ -17,6 +18,8 @@ export interface PublicAppDeps {
   provider: GsmcpOAuthProvider;
   baseUrl: PublicBaseUrl;
   service: SheetsService;
+  /** When present, the run_apps_script tool is registered (still needs the script.eval scope). */
+  evaluator?: ScriptEvaluator;
   trustProxy: boolean | number | string;
   logger?: Logger;
   /** Requests per minute per token on /mcp (default 120). */
@@ -50,9 +53,9 @@ export function createPublicApp(deps: PublicAppDeps): Express {
         router: mcpAuthRouter({
           provider: deps.provider,
           issuerUrl: new URL(base),
-          scopesSupported: [...SUPPORTED_SCOPES],
+          scopesSupported: [...ADVERTISED_SCOPES],
           resourceServerUrl: new URL(`${base}/mcp`),
-          resourceName: "gsheets-mcp",
+          resourceName: "apps-script-mcp",
           // The SDK's limiters are built lazily here (the base URL is dynamic), which trips express-rate-limit's
           // "created in a request handler" self-check; keep the limits, skip that check.
           authorizationOptions: { rateLimit: { validate: false } },
@@ -94,8 +97,8 @@ export function createPublicApp(deps: PublicAppDeps): Express {
       const meta = {
         resource: `${base}/mcp`,
         authorization_servers: [`${base}/`],
-        scopes_supported: [...SUPPORTED_SCOPES],
-        resource_name: "gsheets-mcp",
+        scopes_supported: [...ADVERTISED_SCOPES],
+        resource_name: "apps-script-mcp",
       };
       if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
         res.set("Allow", "GET, HEAD, OPTIONS").status(405).json({ error: "method_not_allowed" });
@@ -133,7 +136,7 @@ export function createPublicApp(deps: PublicAppDeps): Express {
   };
 
   app.post("/mcp", bearer, rateLimit, express.json({ limit: "8mb" }), async (req, res) => {
-    const server = createMcpServer(deps.service, log);
+    const server = createMcpServer(deps.service, log, deps.evaluator);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on("close", () => {
       void transport.close();

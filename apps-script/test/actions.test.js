@@ -50,9 +50,9 @@ test('spreadsheets.list uses the live name and falls back to the stored one', ()
   const { sb, client, s } = setup();
   sb.sheetsFake.get(s.id).name = 'Budget 2026';
   const ghost = { id: 'ghostghostghost', name: 'Stored', alias: 'ghost', access: 'read' };
-  const list = JSON.parse(sb.props.get('gsmcp.spreadsheets'));
+  const list = JSON.parse(sb.props.get('asmcp.spreadsheets'));
   list.push(ghost);
-  sb.props.set('gsmcp.spreadsheets', JSON.stringify(list));
+  sb.props.set('asmcp.spreadsheets', JSON.stringify(list));
   const r = client.call('spreadsheets.list');
   assert.equal(r.ok, true);
   assert.deepEqual(r.result.spreadsheets, [

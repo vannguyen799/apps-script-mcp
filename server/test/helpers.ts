@@ -9,6 +9,7 @@ import { AdminAuth } from "../src/auth/admin-auth.js";
 import { GsmcpOAuthProvider } from "../src/auth/oauth-provider.js";
 import { PatService } from "../src/auth/pat.js";
 import { ConnectionManager } from "../src/connection/connection-manager.js";
+import type { EvalResult, ScriptEvaluator } from "../src/core/script/evaluator.js";
 import type * as G from "../src/core/sheets/gateway.js";
 import { SheetsService } from "../src/core/sheets/sheets.service.js";
 import { createAdminApp } from "../src/http/admin-app.js";
@@ -53,10 +54,21 @@ export class FakeGateway implements G.SheetsGateway {
   }
 }
 
+/** Records what it is asked to run; `handler` decides the outcome. */
+export class FakeEvaluator implements ScriptEvaluator {
+  calls: Array<{ code: string; args: unknown }> = [];
+  handler: (code: string, args: unknown) => Promise<EvalResult> = async () => ({ value: { ok: true }, logs: ["hello"], durationMs: 3 });
+  evaluate(code: string, args?: unknown): Promise<EvalResult> {
+    this.calls.push({ code, args });
+    return this.handler(code, args);
+  }
+}
+
 export interface Harness {
   dir: string;
   store: StateStore;
   gateway: FakeGateway;
+  evaluator: FakeEvaluator;
   admin: AdminAuth;
   pats: PatService;
   provider: GsmcpOAuthProvider;
@@ -78,11 +90,12 @@ function listen(app: Express): Promise<Server> {
   });
 }
 
-export async function makeHarness(opts: { baseUrl?: boolean; setup?: boolean; envBase?: string } = {}): Promise<Harness> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "gsmcp-test-"));
+export async function makeHarness(opts: { baseUrl?: boolean; setup?: boolean; envBase?: string; withEvaluator?: boolean } = {}): Promise<Harness> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "asmcp-test-"));
   const store = new StateStore(dir);
   await store.load();
   const gateway = new FakeGateway();
+  const evaluator = new FakeEvaluator();
   const limiter = new FailureLimiter(5, 15 * 60_000);
   const admin = new AdminAuth(store);
   const pats = new PatService(store);
@@ -95,7 +108,7 @@ export async function makeHarness(opts: { baseUrl?: boolean; setup?: boolean; en
     const t = await admin.ensureSetupToken();
     await admin.completeSetup(t!, password);
   }
-  const publicApp = createPublicApp({ provider, baseUrl, service, trustProxy: false });
+  const publicApp = createPublicApp({ provider, baseUrl, service, evaluator: opts.withEvaluator ? evaluator : undefined, trustProxy: false });
   const adminApp = createAdminApp({ auth: admin, limiter, connection, baseUrl, pats, provider, allowedHosts: ["admin.internal"], trustProxy: false });
   const ps = await listen(publicApp);
   const as = await listen(adminApp);
@@ -103,7 +116,7 @@ export async function makeHarness(opts: { baseUrl?: boolean; setup?: boolean; en
   const adminUrl = `http://127.0.0.1:${(as.address() as AddressInfo).port}`;
   if (opts.baseUrl !== false && !opts.envBase) await baseUrl.set(publicUrl);
   return {
-    dir, store, gateway, admin, pats, provider, baseUrl, connection, service, limiter, publicApp, adminApp, publicUrl, adminUrl, password,
+    dir, store, gateway, evaluator, admin, pats, provider, baseUrl, connection, service, limiter, publicApp, adminApp, publicUrl, adminUrl, password,
     close: async () => {
       connection.stop();
       ps.closeAllConnections();

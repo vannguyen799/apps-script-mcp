@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { createSandbox } = require('./harness');
 
 const PUBLIC_OK = new Set(['doGet', 'doPost', 'admin_getState', 'admin_submitPairingCode', 'admin_unpair',
-  'admin_addSpreadsheet', 'admin_updateSpreadsheet', 'admin_removeSpreadsheet']);
+  'admin_addSpreadsheet', 'admin_updateSpreadsheet', 'admin_removeSpreadsheet', 'admin_setEvalEnabled', 'admin_getEvalAudit']);
 
 test('only doGet, doPost and the admin_* API are public (everything else ends with _)', () => {
   const { ctx } = createSandbox();
@@ -31,6 +31,8 @@ test('owner gate rejects an anonymous caller (empty active email) on every entry
   denied(() => sb.ctx.admin_addSpreadsheet('x'.repeat(30), 'a', 'read'));
   denied(() => sb.ctx.admin_updateSpreadsheet('id', 'a', 'read'));
   denied(() => sb.ctx.admin_removeSpreadsheet('id'));
+  denied(() => sb.ctx.admin_setEvalEnabled(true));
+  denied(() => sb.ctx.admin_getEvalAudit());
   const page = sb.ctx.doGet({});
   assert.match(page.getContent(), /Truy cập bị từ chối/);
   assert.equal(sb.props.size, 0);
@@ -77,7 +79,7 @@ test('admin_unpair removes the pairing and any pending code; calls then fail', (
   sb.enterPairingCode('EFGH-2345');
   sb.ctx.admin_unpair();
   assert.equal(sb.ctx.admin_getState().paired, false);
-  assert.equal(sb.props.has('gsmcp.pairing.pending'), false);
+  assert.equal(sb.props.has('asmcp.pairing.pending'), false);
   assert.equal(c.call('ping').error.code, 'UNAUTHENTICATED');
 });
 

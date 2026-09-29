@@ -23,7 +23,9 @@ var ACTIONS_ = {
   'range.write': { write: true, run: actionRangeWrite_ },
   'rows.append': { write: true, run: actionRowsAppend_ },
   'search': { write: false, run: actionSearch_ },
-  'batch.update': { write: true, run: actionBatchUpdate_ }
+  'batch.update': { write: true, run: actionBatchUpdate_ },
+  // Lazy: with the multi-file layout Eval.js is loaded after this file. Opt-in and owner-gated (DESIGN.md section 8).
+  'script.eval': { write: true, run: function (params) { return actionEval_(params); } }
 };
 
 function isAction_(name) {
@@ -161,7 +163,8 @@ function actionPing_() {
   return {
     account: Session.getEffectiveUser().getEmail(),
     scriptVersion: SCRIPT_VERSION_,
-    spreadsheetCount: getAllowlist_().length
+    spreadsheetCount: getAllowlist_().length,
+    evalEnabled: isEvalEnabled_()
   };
 }
 

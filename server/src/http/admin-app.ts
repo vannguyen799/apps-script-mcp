@@ -14,7 +14,7 @@ import type { PublicBaseUrl } from "../settings/public-base-url.js";
 import { safeEqualStr } from "../util/crypto.js";
 import type { FailureLimiter } from "../util/rate-limit.js";
 
-export const COOKIE_NAME = "gsmcp_admin";
+export const COOKIE_NAME = "asmcp_admin";
 const DEFAULT_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 export interface AdminAppDeps {

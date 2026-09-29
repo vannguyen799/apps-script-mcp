@@ -110,4 +110,63 @@ describe("server adapter <-> Apps Script contract", () => {
     await fixed.call("ping");
     await expect(fixed.call("ping")).rejects.toMatchObject({ code: "REPLAYED" });
   });
+
+  describe("script evaluation (DESIGN.md section 8)", () => {
+    it("is disabled by default: EVAL_DISABLED, and ping says evalEnabled=false", async () => {
+      const { sb, client } = await pairedSetup();
+      const gateway = new AppsScriptGateway(client);
+      expect((await gateway.ping()).evalEnabled).toBe(false);
+      await expect(gateway.evaluate("globalThis.__ran = true; return 1;")).rejects.toMatchObject({ code: "EVAL_DISABLED" });
+      expect(sb.ctx.__ran).toBeUndefined();
+      // Only the owner page can enable it; the server has no way to.
+      await expect(client.call("script.enable", { enabled: true })).rejects.toMatchObject({ code: "UNKNOWN_ACTION" });
+      await expect(gateway.evaluate("return 1")).rejects.toMatchObject({ code: "EVAL_DISABLED" });
+    });
+
+    it("runs end to end through the real Apps Script code once the owner enabled it", async () => {
+      const { sb, client } = await pairedSetup();
+      const gateway = new AppsScriptGateway(client);
+      sb.ctx.admin_setEvalEnabled(true);
+      expect((await gateway.ping()).evalEnabled).toBe(true);
+      // Not on the allowlist: evaluated code is outside it (that is the documented risk).
+      sb.addSpreadsheet({ id: "unlisted", name: "Unlisted", sheets: { S: [["a", 1], ["b", 2]] } });
+
+      const r = await gateway.evaluate(
+        'log("opening", args.id); var v = SpreadsheetApp.openById(args.id).getSheetByName("S").getDataRange().getValues(); return { rows: v.length, first: v[0], at: new Date(0) };',
+        { id: "unlisted" },
+      );
+      expect(r.value).toEqual({ rows: 2, first: ["a", 1], at: "1970-01-01T00:00:00.000Z" });
+      expect(r.logs).toEqual(["opening unlisted"]);
+      expect(typeof r.durationMs).toBe("number");
+      expect(sb.sheetsFake.opened).toContain("unlisted");
+      expect((await gateway.evaluate("return;")).value).toBeNull();
+
+      // The audit trail on the Apps Script side holds hashes, never the code.
+      const audit = sb.ctx.admin_getEvalAudit();
+      expect(audit).toHaveLength(2);
+      expect(JSON.stringify(audit)).not.toContain("getDataRange");
+
+      sb.ctx.admin_setEvalEnabled(false);
+      await expect(gateway.evaluate("return 1")).rejects.toMatchObject({ code: "EVAL_DISABLED" });
+    });
+
+    it("surfaces EVAL_ERROR with the message and the logs written before the throw", async () => {
+      const { sb, client } = await pairedSetup();
+      const gateway = new AppsScriptGateway(client);
+      sb.ctx.admin_setEvalEnabled(true);
+      const e = (await gateway.evaluate('log("one"); log({ two: 2 }); undefinedFunction();').catch((x: unknown) => x)) as GatewayError;
+      expect(e).toBeInstanceOf(GatewayError);
+      expect(e.code).toBe("EVAL_ERROR");
+      expect(e.message).toMatch(/^ReferenceError: undefinedFunction is not defined/);
+      expect(e.logs).toEqual(["one", '{"two":2}']);
+      await expect(gateway.evaluate("var o = {}; o.o = o; return o;")).rejects.toMatchObject({ code: "EVAL_ERROR", message: "Return value is not JSON-serializable" });
+      await expect(gateway.evaluate('return "x".repeat(5 * 1024 * 1024);')).rejects.toMatchObject({ code: "LIMIT_EXCEEDED" });
+    });
+
+    it("rejects a tampered eval response (signature covers value and logs)", async () => {
+      const { sb, client } = await pairedSetup((env) => ({ ...env, body: env.body.replace("42", "43") }));
+      sb.ctx.admin_setEvalEnabled(true);
+      await expect(new AppsScriptGateway(client).evaluate("return 42;")).rejects.toThrow(/invalid signature/);
+    });
+  });
 });

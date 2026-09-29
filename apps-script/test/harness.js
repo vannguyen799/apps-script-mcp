@@ -32,8 +32,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const SRC_DIR = path.join(__dirname, '..', 'src');
-// GSMCP_BUNDLE=1 runs the whole suite against the single-file build (apps-script/Code.gs) instead of src/.
-const BUNDLE = process.env.GSMCP_BUNDLE === '1';
+// ASMCP_BUNDLE=1 runs the whole suite against the single-file build (apps-script/Code.gs) instead of src/.
+const BUNDLE = process.env.ASMCP_BUNDLE === '1';
 const BUNDLE_FILE = path.join(__dirname, '..', 'Code.gs');
 
 // ---------------------------------------------------------------- client-side crypto (spec section 4)
@@ -411,9 +411,9 @@ function createSandbox(opts = {}) {
       id = id || `1${crypto.randomBytes(20).toString('base64url')}`;
       sheetsFake.spreadsheets.set(id, new FakeSpreadsheet(sheetsFake, id, name, sheets));
       if (access) {
-        const list = JSON.parse(props.get('gsmcp.spreadsheets') || '[]');
+        const list = JSON.parse(props.get('asmcp.spreadsheets') || '[]');
         list.push({ id, name, alias: alias || name, access });
-        props.set('gsmcp.spreadsheets', JSON.stringify(list));
+        props.set('asmcp.spreadsheets', JSON.stringify(list));
       }
       return { id, name, alias: alias || name, access: access || null };
     },

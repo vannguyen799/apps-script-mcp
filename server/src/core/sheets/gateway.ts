@@ -17,6 +17,8 @@ export const GATEWAY_ERROR_CODES = [
   "FORMULA_NOT_ALLOWED",
   "INVALID_VALUE",
   "INTERNAL",
+  "EVAL_DISABLED",
+  "EVAL_ERROR",
 ] as const;
 
 /** DESIGN.md 4.4 codes, plus NOT_CONNECTED which is raised locally and never appears on the wire. */
@@ -26,6 +28,8 @@ export class GatewayError extends Error {
   constructor(
     public readonly code: GatewayErrorCode,
     message: string,
+    /** Only EVAL_ERROR carries these: the log lines a script wrote before it threw. */
+    public readonly logs?: string[],
   ) {
     super(message);
     this.name = "GatewayError";
@@ -70,6 +74,8 @@ export interface PingResult {
   account: string;
   backendVersion: string | null;
   spreadsheetCount: number;
+  /** Whether the owner enabled script evaluation; null when the backend does not say. */
+  evalEnabled?: boolean | null;
 }
 
 export interface ReadRequest {

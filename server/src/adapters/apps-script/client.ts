@@ -17,9 +17,18 @@ export interface AppsScriptClientOptions {
   logger?: Logger;
 }
 
-function wireError(error: { code?: unknown; message?: unknown } | undefined): GatewayError {
+const EVAL_MAX_MESSAGE = 2000;
+const EVAL_MAX_LOG_LINES = 200;
+
+/** `signed` = the response signature verified. Only then may an EVAL_ERROR carry its long message and logs. */
+function wireError(error: { code?: unknown; message?: unknown; logs?: unknown } | undefined, signed = false): GatewayError {
   const code = typeof error?.code === "string" && (GATEWAY_ERROR_CODES as readonly string[]).includes(error.code) ? (error.code as GatewayErrorCode) : "INTERNAL";
-  const msg = typeof error?.message === "string" && error.message !== "" ? error.message.slice(0, 300) : code;
+  const max = signed && code === "EVAL_ERROR" ? EVAL_MAX_MESSAGE : 300;
+  const msg = typeof error?.message === "string" && error.message !== "" ? error.message.slice(0, max) : code;
+  if (signed && code === "EVAL_ERROR" && Array.isArray(error?.logs)) {
+    const logs = error.logs.filter((l): l is string => typeof l === "string").slice(0, EVAL_MAX_LOG_LINES).map((l) => l.slice(0, EVAL_MAX_MESSAGE));
+    return new GatewayError(code, msg, logs);
+  }
   return new GatewayError(code, msg);
 }
 
@@ -39,7 +48,7 @@ export class AppsScriptClient {
     this.log = opts.logger ?? nullLogger;
   }
 
-  async call(action: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  async call(action: string, params: Record<string, unknown> = {}, opts: { timeoutMs?: number } = {}): Promise<unknown> {
     const started = this.now();
     const ts = this.now();
     const nonce = this.nonce();
@@ -54,7 +63,7 @@ export class AppsScriptClient {
       sig: signCall(this.opts.secret, this.opts.instanceId, ts, nonce, payload),
     };
     try {
-      const raw = await postJson(this.opts.url, envelope, this.fetchImpl, this.timeoutMs);
+      const raw = await postJson(this.opts.url, envelope, this.fetchImpl, opts.timeoutMs ?? this.timeoutMs);
       const { body, sig } = readEnvelope(raw);
 
       if (sig === null || sig === undefined) {
@@ -67,7 +76,7 @@ export class AppsScriptClient {
         throw new GatewayError("INTERNAL", "Rejected a response with an invalid signature from Apps Script.");
       }
       const outcome = parseBody(body);
-      if (!outcome.ok) throw wireError(outcome.error);
+      if (!outcome.ok) throw wireError(outcome.error, true);
       this.log.debug("apps_script_call", { action, durationMs: this.now() - started, resultCode: "OK" });
       return outcome.result;
     } catch (e) {

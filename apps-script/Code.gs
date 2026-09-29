@@ -1,6 +1,6 @@
 /**
- * gsheets-mcp - Google Apps Script (single-file build)
- * https://github.com/vannguyen799/gsheets-mcp  (MIT)
+ * apps-script-mcp - Google Apps Script (single-file build)
+ * https://github.com/vannguyen799/apps-script-mcp  (MIT)
  *
  * Paste this whole file into Code.gs of a new Apps Script project, then Deploy > New deployment > Web app:
  *   Execute as: Me    Who has access: Anyone
@@ -43,7 +43,7 @@ function doGet(e) {
       'Hãy mở trang này khi đã đăng nhập bằng tài khoản Google sở hữu script.</p>');
   }
   return adminPage_()
-    .setTitle('gsheets-mcp - Quản trị')
+    .setTitle('apps-script-mcp - Quản trị')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -84,7 +84,9 @@ function admin_getState() {
     instanceLabel: pairing ? pairing.instanceLabel : null,
     pairedAt: pairing ? pairing.pairedAt : null,
     pendingExpiresAt: pending && pending.expiresAt > now ? pending.expiresAt : null,
-    spreadsheets: getAllowlist_()
+    spreadsheets: getAllowlist_(),
+    evalEnabled: isEvalEnabled_(),
+    evalChangedAt: getEvalConfig_().changedAt
   };
 }
 
@@ -165,6 +167,23 @@ function admin_removeSpreadsheet(id) {
   });
 }
 
+/** Turns script evaluation (DESIGN.md section 8) on or off. Only the owner can; the MCP server cannot. */
+function admin_setEvalEnabled(enabled) {
+  assertOwner_();
+  if (typeof enabled !== 'boolean') throw new Error('Giá trị bật/tắt phải là true hoặc false.');
+  return withLock_(function () {
+    var config = { enabled: enabled, changedAt: new Date(Date.now()).toISOString() };
+    writeJson_(STORE_EVAL_KEY_, config);
+    return { ok: true, evalEnabled: config.enabled, evalChangedAt: config.changedAt };
+  });
+}
+
+/** The last 50 script.eval runs, newest first: {at, codeSha256, ok, durationMs, errorName?}. Never code. */
+function admin_getEvalAudit() {
+  assertOwner_();
+  return getEvalAudit_().slice().reverse();
+}
+
 // ---------- admin helpers ----------
 
 function extractSpreadsheetId_(input) {
@@ -214,7 +233,7 @@ var PAIR_ALPHABET_RE_ = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
 /** Throws a coded error understood by the request handler. */
 function fail_(code, message) {
   var e = new Error(message);
-  e.gsmcpCode = code;
+  e.asmcpCode = code;
   throw e;
 }
 
@@ -258,7 +277,7 @@ function normalizePairingCode_(code) {
 }
 
 function pairingCodeHash_(normalizedCode) {
-  return sha256Hex_('gsmcp-pair-v1:' + normalizedCode);
+  return sha256Hex_('asmcp-pair-v1:' + normalizedCode);
 }
 
 function isValidCode_(normalized) {
@@ -294,7 +313,7 @@ function processRequest_(text) {
     if (req.kind === 'call') return handleCall_(req);
     return unsignedError_('BAD_REQUEST', 'Unknown request kind');
   } catch (err) {
-    if (err && err.gsmcpCode) return unsignedError_(err.gsmcpCode, err.message);
+    if (err && err.asmcpCode) return unsignedError_(err.asmcpCode, err.message);
     return unsignedError_('INTERNAL', 'Internal error');
   }
 }
@@ -375,8 +394,10 @@ function handleCall_(req) {
   var secret = pairing.secret;
   var nonce = req.nonce;
   var reply = function (obj) { return signedEnvelope_(secret, nonce, obj); };
-  var replyError = function (code, message) {
-    return reply({ ok: false, error: { code: code, message: message } });
+  var replyError = function (code, message, logs) {
+    var error = { code: code, message: message };
+    if (logs) error.logs = logs; // only script.eval errors carry logs
+    return reply({ ok: false, error: error });
   };
   try {
     // 5. replay
@@ -404,7 +425,7 @@ function handleCall_(req) {
     var result = runAction_(payload.action, params);
     return reply({ ok: true, result: result });
   } catch (err) {
-    if (err && err.gsmcpCode) return replyError(err.gsmcpCode, err.message);
+    if (err && err.asmcpCode) return replyError(err.asmcpCode, err.message, err.asmcpLogs);
     // No stack, no cell data: a fixed message only.
     return replyError('INTERNAL', 'Internal error');
   }
@@ -436,7 +457,9 @@ var ACTIONS_ = {
   'range.write': { write: true, run: actionRangeWrite_ },
   'rows.append': { write: true, run: actionRowsAppend_ },
   'search': { write: false, run: actionSearch_ },
-  'batch.update': { write: true, run: actionBatchUpdate_ }
+  'batch.update': { write: true, run: actionBatchUpdate_ },
+  // Lazy: with the multi-file layout Eval.js is loaded after this file. Opt-in and owner-gated (DESIGN.md section 8).
+  'script.eval': { write: true, run: function (params) { return actionEval_(params); } }
 };
 
 function isAction_(name) {
@@ -574,7 +597,8 @@ function actionPing_() {
   return {
     account: Session.getEffectiveUser().getEmail(),
     scriptVersion: SCRIPT_VERSION_,
-    spreadsheetCount: getAllowlist_().length
+    spreadsheetCount: getAllowlist_().length,
+    evalEnabled: isEvalEnabled_()
   };
 }
 
@@ -847,6 +871,151 @@ function actionBatchUpdate_(p) {
   });
 }
 
+// ===== Eval.js =====
+/**
+ * Eval.js - opt-in script evaluation (DESIGN.md section 8).
+ * OFF by default. The spreadsheet allowlist does NOT apply to evaluated code: the only capability
+ * boundary is the OAuth scopes declared in appsscript.json. Only the owner admin page can turn it on
+ * (admin_setEvalEnabled); the MCP server cannot. The audit trail stores a SHA-256 of the code, never the code,
+ * the args or the results.
+ */
+
+var STORE_EVAL_KEY_ = 'asmcp.eval';
+var STORE_EVAL_AUDIT_KEY_ = 'asmcp.evalAudit';
+var EVAL_LIMITS_ = {
+  CODE_CHARS: 100000,
+  LOG_LINE_CHARS: 2000,
+  LOG_LINES: 200,
+  VALUE_CHARS: 4 * 1024 * 1024,
+  MESSAGE_CHARS: 2000,
+  AUDIT_ENTRIES: 50,
+  AUDIT_NAME_CHARS: 32
+};
+
+/** {enabled, changedAt}. Anything other than a literal true is "disabled". */
+function getEvalConfig_() {
+  var c = readJson_(STORE_EVAL_KEY_);
+  if (!isPlainObject_(c)) return { enabled: false, changedAt: null };
+  return { enabled: c.enabled === true, changedAt: typeof c.changedAt === 'string' ? c.changedAt : null };
+}
+
+function isEvalEnabled_() {
+  return getEvalConfig_().enabled;
+}
+
+function getEvalAudit_() {
+  var list = readJson_(STORE_EVAL_AUDIT_KEY_);
+  return Array.isArray(list) ? list : [];
+}
+
+/** Appends an audit entry: newest last, at most 50 entries (and never more than one ScriptProperties value holds). */
+function appendEvalAudit_(entry) {
+  withLock_(function () {
+    var list = getEvalAudit_();
+    list.push(entry);
+    while (list.length > EVAL_LIMITS_.AUDIT_ENTRIES) list.shift();
+    while (list.length > 1 && JSON.stringify(list).length > STORE_MAX_VALUE_CHARS_) list.shift();
+    writeJson_(STORE_EVAL_AUDIT_KEY_, list);
+  });
+}
+
+/** Text of one log() part: strings as is, everything else JSON, falling back to String(). */
+function evalLogPart_(v) {
+  if (typeof v === 'string') return v;
+  try {
+    var j = JSON.stringify(v);
+    if (typeof j === 'string') return j;
+  } catch (e) { /* fall through */ }
+  try {
+    return String(v);
+  } catch (e2) {
+    return '[unprintable]';
+  }
+}
+
+/** Only letters, digits, '_', '$', '.' survive: the name is caller-controlled and must stay small. */
+function evalErrorName_(err) {
+  var raw = 'Error';
+  try {
+    if (err && typeof err.name === 'string' && err.name) raw = err.name;
+  } catch (e) { /* keep default */ }
+  return raw.replace(/[^A-Za-z0-9_$.]/g, '').slice(0, EVAL_LIMITS_.AUDIT_NAME_CHARS) || 'Error';
+}
+
+/** "Name: message" (<= 2000 chars). This is the one error that may contain data: the owner asked for it. */
+function evalErrorMessage_(err) {
+  var name = 'Error';
+  var message = '';
+  try {
+    if (err && typeof err.name === 'string' && err.name) name = err.name;
+    message = err && err.message !== undefined ? String(err.message) : String(err);
+  } catch (e) {
+    message = '[unprintable error]';
+  }
+  return (name + ': ' + message).slice(0, EVAL_LIMITS_.MESSAGE_CHARS);
+}
+
+/** Action script.eval: {code, args?} -> {value, logs, durationMs}. */
+function actionEval_(params) {
+  if (!isEvalEnabled_()) {
+    fail_('EVAL_DISABLED', 'Script evaluation is disabled. The owner must enable it on the Apps Script admin page.');
+  }
+  var code = params.code;
+  if (typeof code !== 'string' || code.length === 0) fail_('BAD_REQUEST', 'code must be a non-empty string');
+  if (code.length > EVAL_LIMITS_.CODE_CHARS) {
+    fail_('LIMIT_EXCEEDED', 'code exceeds ' + EVAL_LIMITS_.CODE_CHARS + ' characters');
+  }
+  var codeSha256 = sha256Hex_(code);
+
+  var logs = [];
+  var log = function () {
+    if (logs.length >= EVAL_LIMITS_.LOG_LINES) return;
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) parts.push(evalLogPart_(arguments[i]));
+    logs.push(parts.join(' ').slice(0, EVAL_LIMITS_.LOG_LINE_CHARS));
+  };
+
+  var started = Date.now();
+  var audit = function (ok, errorName) {
+    var entry = { at: new Date(Date.now()).toISOString(), codeSha256: codeSha256, ok: ok, durationMs: Date.now() - started };
+    if (errorName) entry.errorName = errorName;
+    try {
+      appendEvalAudit_(entry);
+    } catch (e) {
+      // The code has already run: do not lose its result because the audit write failed.
+      console.error('eval audit write failed');
+    }
+  };
+  var failEval = function (errorCode, message, name) {
+    audit(false, name);
+    var e = new Error(message);
+    e.asmcpCode = errorCode;
+    if (errorCode === 'EVAL_ERROR') e.asmcpLogs = logs; // logs travel with EVAL_ERROR only
+    throw e;
+  };
+
+  var value;
+  try {
+    value = new Function('args', 'log', code)(params.args, log);
+  } catch (err) {
+    failEval('EVAL_ERROR', evalErrorMessage_(err), evalErrorName_(err));
+  }
+
+  var text;
+  try {
+    text = JSON.stringify(value);
+  } catch (err2) {
+    failEval('EVAL_ERROR', 'Return value is not JSON-serializable', 'NotSerializable');
+  }
+  // undefined (also functions and symbols) serialize to nothing: the value is null.
+  if (text === undefined) text = 'null';
+  if (text.length > EVAL_LIMITS_.VALUE_CHARS) {
+    failEval('LIMIT_EXCEEDED', 'Return value exceeds ' + EVAL_LIMITS_.VALUE_CHARS + ' characters', 'ValueTooLarge');
+  }
+  audit(true);
+  return { value: JSON.parse(text), logs: logs, durationMs: Date.now() - started };
+}
+
 // ===== A1.js =====
 /**
  * A1.js - A1 notation parsing / formatting (sheet-qualified ranges only).
@@ -991,13 +1160,13 @@ function formatA1_(sheet, r1, c1, r2, c2) {
 // ===== Store.js =====
 /**
  * Store.js - persistence in ScriptProperties.
- * Keys (DESIGN.md section 5.2): gsmcp.pairing, gsmcp.pairing.pending, gsmcp.spreadsheets (JSON).
+ * Keys (DESIGN.md section 5.2): asmcp.pairing, asmcp.pairing.pending, asmcp.spreadsheets (JSON).
  * The pairing record holds the HMAC secret: it must never be returned to the admin page or logged.
  */
 
-var STORE_PAIRING_KEY_ = 'gsmcp.pairing';
-var STORE_PENDING_KEY_ = 'gsmcp.pairing.pending';
-var STORE_SHEETS_KEY_ = 'gsmcp.spreadsheets';
+var STORE_PAIRING_KEY_ = 'asmcp.pairing';
+var STORE_PENDING_KEY_ = 'asmcp.pairing.pending';
+var STORE_SHEETS_KEY_ = 'asmcp.spreadsheets';
 var STORE_MAX_VALUE_CHARS_ = 9000; // ScriptProperties limit is 9 KB per value
 
 function readJson_(key) {
@@ -1072,4 +1241,4 @@ function findAllowed_(id) {
 }
 
 // ===== Admin.html =====
-var ADMIN_HTML_ = "<!DOCTYPE html>\n<html lang=\"vi\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<style>\n  :root { --bg:#f6f7f9; --card:#fff; --text:#1f2933; --muted:#667085; --line:#e4e7ec; --accent:#1a73e8; --danger:#c5221f; --ok:#137333; }\n  * { box-sizing: border-box; }\n  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif; }\n  main { max-width:820px; margin:0 auto; }\n  h1 { font-size:20px; margin:0 0 16px; }\n  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }\n  h2 { font-size:15px; margin:0 0 12px; }\n  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }\n  input[type=text], select { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; color:inherit; }\n  input[type=text] { flex:1; min-width:160px; }\n  button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; cursor:pointer; }\n  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }\n  button.danger { color:var(--danger); }\n  button:disabled { opacity:.5; cursor:default; }\n  table { width:100%; border-collapse:collapse; margin-top:12px; }\n  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }\n  th { color:var(--muted); font-weight:600; font-size:12px; }\n  td.actions { white-space:nowrap; text-align:right; }\n  .muted { color:var(--muted); }\n  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }\n  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; background:#eef1f5; }\n  .badge.ok { background:#e6f4ea; color:var(--ok); }\n  #msg { min-height:20px; margin-bottom:12px; }\n  #msg.err { color:var(--danger); }\n  #msg.ok { color:var(--ok); }\n  .table-wrap { overflow-x:auto; }\n</style>\n</head>\n<body>\n<main>\n  <h1>gsheets-mcp - Quản trị Apps Script</h1>\n  <div id=\"msg\" role=\"status\"></div>\n\n  <section>\n    <h2>Trạng thái ghép nối</h2>\n    <div id=\"pairStatus\" class=\"muted\">Đang tải...</div>\n    <div class=\"row\" style=\"margin-top:12px\">\n      <button id=\"unpairBtn\" class=\"danger\" style=\"display:none\">Hủy ghép nối</button>\n    </div>\n  </section>\n\n  <section>\n    <h2>Nhập mã ghép nối</h2>\n    <p class=\"muted\" style=\"margin-top:0\">Nhập mã hiển thị trong trang quản trị của máy chủ MCP (dạng XXXX-XXXX). Mã có hiệu lực 10 phút.</p>\n    <div class=\"row\">\n      <input type=\"text\" id=\"codeInput\" placeholder=\"XXXX-XXXX\" maxlength=\"12\" autocomplete=\"off\" spellcheck=\"false\">\n      <button id=\"codeBtn\" class=\"primary\">Xác nhận mã</button>\n    </div>\n    <div id=\"pendingInfo\" class=\"muted\" style=\"margin-top:8px\"></div>\n  </section>\n\n  <section>\n    <h2>Bảng tính được phép</h2>\n    <div class=\"row\">\n      <input type=\"text\" id=\"addInput\" placeholder=\"URL hoặc ID bảng tính\" autocomplete=\"off\">\n      <input type=\"text\" id=\"addAlias\" placeholder=\"Alias (tùy chọn)\" style=\"max-width:200px\" maxlength=\"64\">\n      <select id=\"addAccess\">\n        <option value=\"read\">Chỉ đọc</option>\n        <option value=\"write\">Đọc và ghi</option>\n      </select>\n      <button id=\"addBtn\" class=\"primary\">Thêm</button>\n    </div>\n    <div class=\"table-wrap\">\n      <table>\n        <thead><tr><th>Alias</th><th>Tên tệp</th><th>Quyền</th><th></th></tr></thead>\n        <tbody id=\"sheetRows\"></tbody>\n      </table>\n    </div>\n    <div id=\"emptyInfo\" class=\"muted\" style=\"margin-top:8px;display:none\">Chưa có bảng tính nào. Máy chủ MCP chỉ truy cập được các bảng tính trong danh sách này.</div>\n  </section>\n\n  <section>\n    <h2>URL ứng dụng web</h2>\n    <p class=\"muted\" style=\"margin-top:0\">Dán URL này vào trang quản trị của máy chủ MCP.</p>\n    <div class=\"row\">\n      <input type=\"text\" id=\"urlInput\" readonly>\n      <button id=\"copyBtn\">Sao chép</button>\n    </div>\n  </section>\n</main>\n\n<script>\n(function () {\n  var state = null;\n  var editingId = null;\n  var $ = function (id) { return document.getElementById(id); };\n\n  function msg(text, kind) {\n    var el = $('msg');\n    el.textContent = text || '';\n    el.className = kind || '';\n  }\n  function run(fnName, args, onOk) {\n    msg('');\n    var r = google.script.run\n      .withSuccessHandler(function (res) { onOk && onOk(res); })\n      .withFailureHandler(function (err) {\n        var m = err && err.message ? String(err.message).replace(/^Error:\\s*/, '') : 'Đã xảy ra lỗi.';\n        msg(m === 'ACCESS_DENIED' ? 'Truy cập bị từ chối.' : m, 'err');\n      });\n    r[fnName].apply(r, args);\n  }\n  function fmtTime(v) {\n    var d = new Date(v);\n    return isNaN(d.getTime()) ? String(v) : d.toLocaleString('vi-VN');\n  }\n  function el(tag, text, cls) {\n    var e = document.createElement(tag);\n    if (text !== undefined && text !== null) e.textContent = text;\n    if (cls) e.className = cls;\n    return e;\n  }\n  function accessLabel(a) { return a === 'write' ? 'Đọc và ghi' : 'Chỉ đọc'; }\n\n  function load() {\n    run('admin_getState', [], function (s) { state = s; render(); });\n  }\n\n  function render() {\n    var ps = $('pairStatus');\n    ps.textContent = '';\n    if (state.paired) {\n      var b = el('span', 'Đã ghép nối', 'badge ok');\n      ps.appendChild(b);\n      ps.appendChild(el('div', 'Máy chủ: ' + (state.instanceLabel || '(không tên)')));\n      ps.appendChild(el('div', 'Ghép nối lúc: ' + fmtTime(state.pairedAt), 'muted'));\n      ps.appendChild(el('div', 'Tài khoản Google: ' + state.account, 'muted'));\n    } else {\n      ps.appendChild(el('span', 'Chưa ghép nối', 'badge'));\n    }\n    $('unpairBtn').style.display = state.paired ? '' : 'none';\n    $('pendingInfo').textContent = state.pendingExpiresAt\n      ? 'Đang chờ máy chủ xác nhận mã (hết hạn lúc ' + fmtTime(state.pendingExpiresAt) + ').' : '';\n    $('urlInput').value = state.webAppUrl || '';\n    renderSheets();\n  }\n\n  function renderSheets() {\n    var body = $('sheetRows');\n    body.textContent = '';\n    var list = state.spreadsheets || [];\n    $('emptyInfo').style.display = list.length ? 'none' : '';\n    list.forEach(function (s) {\n      var tr = document.createElement('tr');\n      var editing = editingId === s.id;\n      var aliasCell = el('td');\n      var accessCell = el('td');\n      var actCell = el('td', null, 'actions');\n      var aliasInput, accessSel;\n      if (editing) {\n        aliasInput = el('input'); aliasInput.type = 'text'; aliasInput.value = s.alias; aliasInput.maxLength = 64;\n        aliasCell.appendChild(aliasInput);\n        accessSel = document.createElement('select');\n        [['read', 'Chỉ đọc'], ['write', 'Đọc và ghi']].forEach(function (o) {\n          var opt = el('option', o[1]); opt.value = o[0]; accessSel.appendChild(opt);\n        });\n        accessSel.value = s.access;\n        accessCell.appendChild(accessSel);\n        var save = el('button', 'Lưu', 'primary');\n        save.onclick = function () {\n          run('admin_updateSpreadsheet', [s.id, aliasInput.value, accessSel.value], function (res) {\n            editingId = null; state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã cập nhật.', 'ok');\n          });\n        };\n        var cancel = el('button', 'Hủy');\n        cancel.onclick = function () { editingId = null; renderSheets(); };\n        actCell.appendChild(save); actCell.appendChild(document.createTextNode(' ')); actCell.appendChild(cancel);\n      } else {\n        aliasCell.appendChild(el('strong', s.alias));\n        accessCell.appendChild(el('span', accessLabel(s.access), 'badge' + (s.access === 'write' ? ' ok' : '')));\n        var edit = el('button', 'Sửa');\n        edit.onclick = function () { editingId = s.id; renderSheets(); };\n        var del = el('button', 'Xóa', 'danger');\n        del.onclick = function () {\n          if (!confirm('Xóa \"' + s.alias + '\" khỏi danh sách?')) return;\n          run('admin_removeSpreadsheet', [s.id], function (res) {\n            state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã xóa.', 'ok');\n          });\n        };\n        actCell.appendChild(edit); actCell.appendChild(document.createTextNode(' ')); actCell.appendChild(del);\n      }\n      var nameCell = el('td');\n      nameCell.appendChild(el('div', s.name));\n      nameCell.appendChild(el('div', s.id, 'mono muted'));\n      tr.appendChild(aliasCell); tr.appendChild(nameCell); tr.appendChild(accessCell); tr.appendChild(actCell);\n      body.appendChild(tr);\n    });\n  }\n\n  $('codeBtn').onclick = function () {\n    var v = $('codeInput').value;\n    run('admin_submitPairingCode', [v], function () {\n      $('codeInput').value = '';\n      msg('Đã lưu mã. Máy chủ MCP sẽ xác nhận trong vài giây.', 'ok');\n      load();\n    });\n  };\n  $('unpairBtn').onclick = function () {\n    if (!confirm('Hủy ghép nối? Máy chủ MCP sẽ không truy cập được nữa cho đến khi ghép nối lại.')) return;\n    run('admin_unpair', [], function () { msg('Đã hủy ghép nối.', 'ok'); load(); });\n  };\n  $('addBtn').onclick = function () {\n    run('admin_addSpreadsheet', [$('addInput').value, $('addAlias').value, $('addAccess').value], function (res) {\n      $('addInput').value = ''; $('addAlias').value = '';\n      state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã thêm bảng tính.', 'ok');\n    });\n  };\n  $('copyBtn').onclick = function () {\n    var input = $('urlInput');\n    var done = function () { msg('Đã sao chép URL.', 'ok'); };\n    if (navigator.clipboard && navigator.clipboard.writeText) {\n      navigator.clipboard.writeText(input.value).then(done, function () { input.select(); document.execCommand('copy'); done(); });\n    } else {\n      input.select(); document.execCommand('copy'); done();\n    }\n  };\n  load();\n})();\n</script>\n</body>\n</html>\n";
+var ADMIN_HTML_ = "<!DOCTYPE html>\n<html lang=\"vi\">\n<head>\n<base target=\"_top\">\n<meta charset=\"utf-8\">\n<style>\n  :root { --bg:#f6f7f9; --card:#fff; --text:#1f2933; --muted:#667085; --line:#e4e7ec; --accent:#1a73e8; --danger:#c5221f; --ok:#137333; }\n  * { box-sizing: border-box; }\n  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif; }\n  main { max-width:820px; margin:0 auto; }\n  h1 { font-size:20px; margin:0 0 16px; }\n  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; }\n  h2 { font-size:15px; margin:0 0 12px; }\n  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }\n  input[type=text], select { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font:inherit; background:#fff; color:inherit; }\n  input[type=text] { flex:1; min-width:160px; }\n  button { padding:7px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; color:inherit; font:inherit; cursor:pointer; }\n  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }\n  button.danger { color:var(--danger); }\n  button:disabled { opacity:.5; cursor:default; }\n  table { width:100%; border-collapse:collapse; margin-top:12px; }\n  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }\n  th { color:var(--muted); font-weight:600; font-size:12px; }\n  td.actions { white-space:nowrap; text-align:right; }\n  .muted { color:var(--muted); }\n  .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }\n  .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; background:#eef1f5; }\n  .badge.ok { background:#e6f4ea; color:var(--ok); }\n  #msg { min-height:20px; margin-bottom:12px; }\n  #msg.err { color:var(--danger); }\n  #msg.ok { color:var(--ok); }\n  .table-wrap { overflow-x:auto; }\n  .warn { border:1px solid var(--danger); background:#fdecea; color:var(--danger); border-radius:6px; padding:10px 12px; margin:0 0 12px; }\n</style>\n</head>\n<body>\n<main>\n  <h1>apps-script-mcp - Quản trị Apps Script</h1>\n  <div id=\"msg\" role=\"status\"></div>\n\n  <section>\n    <h2>Trạng thái ghép nối</h2>\n    <div id=\"pairStatus\" class=\"muted\">Đang tải...</div>\n    <div class=\"row\" style=\"margin-top:12px\">\n      <button id=\"unpairBtn\" class=\"danger\" style=\"display:none\">Hủy ghép nối</button>\n    </div>\n  </section>\n\n  <section>\n    <h2>Nhập mã ghép nối</h2>\n    <p class=\"muted\" style=\"margin-top:0\">Nhập mã hiển thị trong trang quản trị của máy chủ MCP (dạng XXXX-XXXX). Mã có hiệu lực 10 phút.</p>\n    <div class=\"row\">\n      <input type=\"text\" id=\"codeInput\" placeholder=\"XXXX-XXXX\" maxlength=\"12\" autocomplete=\"off\" spellcheck=\"false\">\n      <button id=\"codeBtn\" class=\"primary\">Xác nhận mã</button>\n    </div>\n    <div id=\"pendingInfo\" class=\"muted\" style=\"margin-top:8px\"></div>\n  </section>\n\n  <section>\n    <h2>Bảng tính được phép</h2>\n    <div class=\"row\">\n      <input type=\"text\" id=\"addInput\" placeholder=\"URL hoặc ID bảng tính\" autocomplete=\"off\">\n      <input type=\"text\" id=\"addAlias\" placeholder=\"Alias (tùy chọn)\" style=\"max-width:200px\" maxlength=\"64\">\n      <select id=\"addAccess\">\n        <option value=\"read\">Chỉ đọc</option>\n        <option value=\"write\">Đọc và ghi</option>\n      </select>\n      <button id=\"addBtn\" class=\"primary\">Thêm</button>\n    </div>\n    <div class=\"table-wrap\">\n      <table>\n        <thead><tr><th>Alias</th><th>Tên tệp</th><th>Quyền</th><th></th></tr></thead>\n        <tbody id=\"sheetRows\"></tbody>\n      </table>\n    </div>\n    <div id=\"emptyInfo\" class=\"muted\" style=\"margin-top:8px;display:none\">Chưa có bảng tính nào. Máy chủ MCP chỉ truy cập được các bảng tính trong danh sách này.</div>\n  </section>\n\n  <section>\n    <h2>Chạy Apps Script (nâng cao)</h2>\n    <div class=\"warn\" role=\"alert\">\n      <strong>Cảnh báo.</strong> Khi bật, Claude có thể chạy mã tùy ý bằng tài khoản Google của bạn. Nội dung bảng tính, email hay tệp\n      mà Claude đọc có thể chứa lệnh ẩn (prompt injection) khiến nó chạy mã ngoài ý muốn. Danh sách bảng tính được phép\n      <strong>không</strong> áp dụng cho mã này. Ranh giới thật sự là các scope OAuth khai báo trong <code>appsscript.json</code>:\n      hãy xóa những scope bạn không muốn cấp (nhất là <code>script.external_request</code> và Gmail vì chúng cho phép đưa dữ liệu ra ngoài).\n    </div>\n    <div class=\"row\">\n      <span id=\"evalBadge\" class=\"badge\">Đang tải...</span>\n      <button id=\"evalBtn\" class=\"danger\" disabled>...</button>\n    </div>\n    <div id=\"evalInfo\" class=\"muted\" style=\"margin-top:8px\"></div>\n    <div class=\"row\" style=\"margin-top:12px\">\n      <strong>Nhật ký 50 lần chạy gần nhất</strong>\n      <button id=\"auditBtn\">Tải lại</button>\n    </div>\n    <p class=\"muted\" style=\"margin:4px 0 0\">Chỉ lưu mã băm SHA-256 của mã, không lưu nội dung mã, tham số hay kết quả.</p>\n    <div class=\"table-wrap\">\n      <table>\n        <thead><tr><th>Thời gian</th><th>SHA-256 của mã</th><th>Kết quả</th><th>Thời lượng</th></tr></thead>\n        <tbody id=\"auditRows\"></tbody>\n      </table>\n    </div>\n    <div id=\"auditEmpty\" class=\"muted\" style=\"margin-top:8px;display:none\">Chưa có lần chạy nào.</div>\n  </section>\n\n  <section>\n    <h2>URL ứng dụng web</h2>\n    <p class=\"muted\" style=\"margin-top:0\">Dán URL này vào trang quản trị của máy chủ MCP.</p>\n    <div class=\"row\">\n      <input type=\"text\" id=\"urlInput\" readonly>\n      <button id=\"copyBtn\">Sao chép</button>\n    </div>\n  </section>\n</main>\n\n<script>\n(function () {\n  var state = null;\n  var editingId = null;\n  var $ = function (id) { return document.getElementById(id); };\n\n  function msg(text, kind) {\n    var el = $('msg');\n    el.textContent = text || '';\n    el.className = kind || '';\n  }\n  function run(fnName, args, onOk, onFail) {\n    msg('');\n    var r = google.script.run\n      .withSuccessHandler(function (res) { onOk && onOk(res); })\n      .withFailureHandler(function (err) {\n        var m = err && err.message ? String(err.message).replace(/^Error:\\s*/, '') : 'Đã xảy ra lỗi.';\n        msg(m === 'ACCESS_DENIED' ? 'Truy cập bị từ chối.' : m, 'err');\n        onFail && onFail();\n      });\n    r[fnName].apply(r, args);\n  }\n  function fmtTime(v) {\n    var d = new Date(v);\n    return isNaN(d.getTime()) ? String(v) : d.toLocaleString('vi-VN');\n  }\n  function el(tag, text, cls) {\n    var e = document.createElement(tag);\n    if (text !== undefined && text !== null) e.textContent = text;\n    if (cls) e.className = cls;\n    return e;\n  }\n  function accessLabel(a) { return a === 'write' ? 'Đọc và ghi' : 'Chỉ đọc'; }\n\n  function load() {\n    run('admin_getState', [], function (s) { state = s; render(); });\n  }\n\n  function render() {\n    var ps = $('pairStatus');\n    ps.textContent = '';\n    if (state.paired) {\n      var b = el('span', 'Đã ghép nối', 'badge ok');\n      ps.appendChild(b);\n      ps.appendChild(el('div', 'Máy chủ: ' + (state.instanceLabel || '(không tên)')));\n      ps.appendChild(el('div', 'Ghép nối lúc: ' + fmtTime(state.pairedAt), 'muted'));\n      ps.appendChild(el('div', 'Tài khoản Google: ' + state.account, 'muted'));\n    } else {\n      ps.appendChild(el('span', 'Chưa ghép nối', 'badge'));\n    }\n    $('unpairBtn').style.display = state.paired ? '' : 'none';\n    $('pendingInfo').textContent = state.pendingExpiresAt\n      ? 'Đang chờ máy chủ xác nhận mã (hết hạn lúc ' + fmtTime(state.pendingExpiresAt) + ').' : '';\n    $('urlInput').value = state.webAppUrl || '';\n    renderSheets();\n    renderEval();\n  }\n\n  function renderEval() {\n    var on = !!state.evalEnabled;\n    var badge = $('evalBadge');\n    badge.textContent = on ? 'Đang bật' : 'Đang tắt';\n    badge.className = 'badge' + (on ? ' ok' : '');\n    var btn = $('evalBtn');\n    btn.disabled = false;\n    btn.textContent = on ? 'Tắt chạy script' : 'Bật chạy script';\n    btn.className = on ? '' : 'danger';\n    $('evalInfo').textContent = state.evalChangedAt ? 'Thay đổi lần cuối: ' + fmtTime(state.evalChangedAt) : '';\n  }\n\n  function loadAudit() {\n    run('admin_getEvalAudit', [], function (list) {\n      var body = $('auditRows');\n      body.textContent = '';\n      $('auditEmpty').style.display = list.length ? 'none' : '';\n      list.forEach(function (e) {\n        var tr = document.createElement('tr');\n        var td = function (node) { var c = el('td'); c.appendChild(node); tr.appendChild(c); };\n        td(document.createTextNode(fmtTime(e.at)));\n        td(el('span', String(e.codeSha256).slice(0, 16) + '...', 'mono'));\n        td(el('span', e.ok ? 'Thành công' : 'Lỗi' + (e.errorName ? ': ' + e.errorName : ''), 'badge' + (e.ok ? ' ok' : '')));\n        td(document.createTextNode(e.durationMs + ' ms'));\n        body.appendChild(tr);\n      });\n    });\n  }\n\n  function renderSheets() {\n    var body = $('sheetRows');\n    body.textContent = '';\n    var list = state.spreadsheets || [];\n    $('emptyInfo').style.display = list.length ? 'none' : '';\n    list.forEach(function (s) {\n      var tr = document.createElement('tr');\n      var editing = editingId === s.id;\n      var aliasCell = el('td');\n      var accessCell = el('td');\n      var actCell = el('td', null, 'actions');\n      var aliasInput, accessSel;\n      if (editing) {\n        aliasInput = el('input'); aliasInput.type = 'text'; aliasInput.value = s.alias; aliasInput.maxLength = 64;\n        aliasCell.appendChild(aliasInput);\n        accessSel = document.createElement('select');\n        [['read', 'Chỉ đọc'], ['write', 'Đọc và ghi']].forEach(function (o) {\n          var opt = el('option', o[1]); opt.value = o[0]; accessSel.appendChild(opt);\n        });\n        accessSel.value = s.access;\n        accessCell.appendChild(accessSel);\n        var save = el('button', 'Lưu', 'primary');\n        save.onclick = function () {\n          run('admin_updateSpreadsheet', [s.id, aliasInput.value, accessSel.value], function (res) {\n            editingId = null; state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã cập nhật.', 'ok');\n          });\n        };\n        var cancel = el('button', 'Hủy');\n        cancel.onclick = function () { editingId = null; renderSheets(); };\n        actCell.appendChild(save); actCell.appendChild(document.createTextNode(' ')); actCell.appendChild(cancel);\n      } else {\n        aliasCell.appendChild(el('strong', s.alias));\n        accessCell.appendChild(el('span', accessLabel(s.access), 'badge' + (s.access === 'write' ? ' ok' : '')));\n        var edit = el('button', 'Sửa');\n        edit.onclick = function () { editingId = s.id; renderSheets(); };\n        var del = el('button', 'Xóa', 'danger');\n        del.onclick = function () {\n          if (!confirm('Xóa \"' + s.alias + '\" khỏi danh sách?')) return;\n          run('admin_removeSpreadsheet', [s.id], function (res) {\n            state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã xóa.', 'ok');\n          });\n        };\n        actCell.appendChild(edit); actCell.appendChild(document.createTextNode(' ')); actCell.appendChild(del);\n      }\n      var nameCell = el('td');\n      nameCell.appendChild(el('div', s.name));\n      nameCell.appendChild(el('div', s.id, 'mono muted'));\n      tr.appendChild(aliasCell); tr.appendChild(nameCell); tr.appendChild(accessCell); tr.appendChild(actCell);\n      body.appendChild(tr);\n    });\n  }\n\n  $('codeBtn').onclick = function () {\n    var v = $('codeInput').value;\n    run('admin_submitPairingCode', [v], function () {\n      $('codeInput').value = '';\n      msg('Đã lưu mã. Máy chủ MCP sẽ xác nhận trong vài giây.', 'ok');\n      load();\n    });\n  };\n  $('unpairBtn').onclick = function () {\n    if (!confirm('Hủy ghép nối? Máy chủ MCP sẽ không truy cập được nữa cho đến khi ghép nối lại.')) return;\n    run('admin_unpair', [], function () { msg('Đã hủy ghép nối.', 'ok'); load(); });\n  };\n  $('addBtn').onclick = function () {\n    run('admin_addSpreadsheet', [$('addInput').value, $('addAlias').value, $('addAccess').value], function (res) {\n      $('addInput').value = ''; $('addAlias').value = '';\n      state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã thêm bảng tính.', 'ok');\n    });\n  };\n  $('evalBtn').onclick = function () {\n    var enable = !state.evalEnabled;\n    if (enable && !confirm('Bật chạy script? Claude sẽ chạy được mã tùy ý bằng tài khoản Google của bạn, trong phạm vi các scope trong appsscript.json.')) return;\n    $('evalBtn').disabled = true;\n    run('admin_setEvalEnabled', [enable], function (res) {\n      state.evalEnabled = res.evalEnabled; state.evalChangedAt = res.evalChangedAt; renderEval();\n      msg(enable ? 'Đã bật chạy script.' : 'Đã tắt chạy script.', 'ok');\n    }, renderEval);\n  };\n  $('auditBtn').onclick = loadAudit;\n  $('copyBtn').onclick = function () {\n    var input = $('urlInput');\n    var done = function () { msg('Đã sao chép URL.', 'ok'); };\n    if (navigator.clipboard && navigator.clipboard.writeText) {\n      navigator.clipboard.writeText(input.value).then(done, function () { input.select(); document.execCommand('copy'); done(); });\n    } else {\n      input.select(); document.execCommand('copy'); done();\n    }\n  };\n  load();\n  loadAudit();\n})();\n</script>\n</body>\n</html>\n";

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>gsheets-mcp - Quản trị</title>
+<title>apps-script-mcp - Quản trị</title>
 <style nonce="{{NONCE}}">
 :root{--bg:#f4f5f7;--card:#fff;--fg:#1c1e21;--muted:#5f6368;--line:#dadce0;--pri:#1a73e8;--ok:#188038;--warn:#b06000;--err:#b3261e}
 *{box-sizing:border-box}
@@ -32,12 +32,13 @@ pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4
 .msg.err{background:#fce8e6;color:var(--err)}.msg.ok{background:#e6f4ea;color:var(--ok)}
 .once{background:#fef7e0;border:1px solid #f9ab00;border-radius:8px;padding:10px;margin-top:10px}
 .scopes label{display:inline-block;font-weight:400;margin-right:14px}
+.danger-text{color:#b3261e}
 .narrow{max-width:420px;margin:60px auto}
 </style>
 </head>
 <body>
 <header>
-  <h1>gsheets-mcp</h1>
+  <h1>apps-script-mcp</h1>
   <div id="hdr-actions" class="hidden"><button id="btn-logout" type="button">Đăng xuất</button></div>
 </header>
 <main>
@@ -77,6 +78,7 @@ pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4
       <div id="conn-info" class="hidden">
         <p>Tài khoản Google: <strong id="conn-account"></strong></p>
         <p class="muted">Đã ghép cặp lúc: <span id="conn-paired"></span> · Kiểm tra gần nhất: <span id="conn-checked">-</span></p>
+        <p>Chạy script: <strong id="conn-eval">-</strong> <span class="muted">(theo lần ping gần nhất; bật/tắt trong trang quản trị Apps Script)</span></p>
         <p class="muted mono" id="conn-url"></p>
         <div class="row">
           <button id="btn-test" type="button">Test connection</button>
@@ -128,7 +130,9 @@ pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4
         <div class="scopes" style="margin-top:8px">
           <label><input type="checkbox" id="pat-read" checked> sheets.read</label>
           <label><input type="checkbox" id="pat-write"> sheets.write</label>
+          <label class="danger-text"><input type="checkbox" id="pat-eval"> script.eval</label>
         </div>
+        <p class="muted danger-text">script.eval cho phép token này chạy mã Apps Script tùy ý bằng tài khoản Google của bạn (bỏ qua danh sách bảng tính được phép; rủi ro prompt injection). Chỉ tick khi thật sự cần, và phải bật thêm trong trang quản trị Apps Script.</p>
         <div class="row"><button class="primary" type="submit">Tạo token</button></div>
       </form>
       <div id="pat-once" class="once hidden">
@@ -150,7 +154,7 @@ pre,.mono{font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;background:#f1f3f4
       <div class="mono" id="help-url">(cấu hình Public base URL trước)</div>
       <p>Sau đó nhập mật khẩu quản trị ở trang cấp quyền hiện ra.</p>
       <p><strong>Claude Code:</strong> tạo một PAT ở trên rồi chạy:</p>
-      <pre id="help-cmd">claude mcp add --transport http gsheets &lt;URL&gt; --header "Authorization: Bearer &lt;PAT&gt;"</pre>
+      <pre id="help-cmd">claude mcp add --transport http apps-script &lt;URL&gt; --header "Authorization: Bearer &lt;PAT&gt;"</pre>
     </section>
   </div>
 </main>
@@ -221,6 +225,7 @@ function renderStatus(st) {
   $("conn-paired").textContent = fmt(c.pairedAt);
   $("conn-checked").textContent = fmt(c.lastCheckedAt);
   $("conn-url").textContent = c.appsScriptUrl || "";
+  $("conn-eval").textContent = c.evalEnabled === true ? "bật" : c.evalEnabled === false ? "tắt" : "chưa rõ";
   show("pair-box", c.state !== "pairing_pending");
   show("pair-active", c.state === "pairing_pending");
   if (c.pairing) { $("pair-code").textContent = c.pairing.code; tickCountdown(); }
@@ -233,7 +238,7 @@ function renderStatus(st) {
   $("mcp-endpoint").textContent = st.mcpEndpoint || "(chưa cấu hình)";
   $("help-url").textContent = st.mcpEndpoint || "(cấu hình Public base URL trước)";
   var url = st.mcpEndpoint || "<URL>";
-  $("help-cmd").textContent = 'claude mcp add --transport http gsheets ' + url + ' --header "Authorization: Bearer <PAT>"';
+  $("help-cmd").textContent = 'claude mcp add --transport http apps-script ' + url + ' --header "Authorization: Bearer <PAT>"';
 }
 
 function refreshStatus() { return api("GET", "/status").then(renderStatus); }
@@ -354,8 +359,12 @@ $("form-pat").addEventListener("submit", function (ev) {
   var scopes = [];
   if ($("pat-read").checked) scopes.push("sheets.read");
   if ($("pat-write").checked) scopes.push("sheets.write");
+  if ($("pat-eval").checked) {
+    if (!confirm("script.eval cho phép chạy mã tùy ý bằng tài khoản Google của bạn. Tạo token với quyền này?")) return;
+    scopes.push("script.eval");
+  }
   api("POST", "/pats", { label: $("pat-label").value, scopes: scopes })
-    .then(function (r) { $("pat-token").textContent = r.token; show("pat-once", true); $("pat-label").value = ""; return refreshPats(); })
+    .then(function (r) { $("pat-token").textContent = r.token; show("pat-once", true); $("pat-label").value = ""; $("pat-eval").checked = false; return refreshPats(); })
     .catch(function (e) { notice(e.message); });
 });
 $("btn-copy-pat").addEventListener("click", function () { copyText($("pat-token").textContent, $("btn-copy-pat")); });

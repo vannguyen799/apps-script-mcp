@@ -1,4 +1,4 @@
-# gsheets-mcp: phần Google Apps Script
+# apps-script-mcp: phần Google Apps Script
 
 Đây là thành phần duy nhất chạm vào Google Sheets. Nó chạy dưới danh nghĩa tài khoản Google của bạn, giữ danh sách bảng tính được phép (allowlist) và chỉ chấp nhận các yêu cầu có chữ ký HMAC từ máy chủ MCP (Docker). Đặc tả giao thức: `docs/DESIGN.md` mục 4 và 5.
 
@@ -11,8 +11,10 @@
 | `src/Actions.js` | Danh sách action cố định và các thao tác Sheets |
 | `src/A1.js` | Phân tích ký hiệu A1 |
 | `src/Store.js` | Lưu allowlist và thông tin ghép nối trong ScriptProperties |
+| `src/Eval.js` | Chạy script tùy chọn (`script.eval`), tắt mặc định, nhật ký chỉ lưu mã băm |
 | `src/Admin.html` | Trang quản trị dành cho chủ sở hữu |
 | `src/appsscript.json` | Manifest (V8, scope tối thiểu) |
+| `appsscript.full.example.json` | Manifest mẫu có thêm scope Docs, Drive, Gmail, Lịch... (chỉ dùng khi bật chạy script) |
 | `Code.gs` | Bản gộp 1 file để dán (sinh bằng `npm run bundle`, không sửa tay) |
 
 ## Triển khai từng bước
@@ -21,7 +23,7 @@
 
 1. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính.
 2. Mở <https://script.google.com> → **Dự án mới** (New project).
-3. Mở <https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/apps-script/Code.gs>, chọn toàn bộ (Ctrl+A), copy,
+3. Mở <https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/apps-script/Code.gs>, chọn toàn bộ (Ctrl+A), copy,
    rồi dán **đè** lên toàn bộ nội dung `Code.gs` trong trình soạn thảo. Bấm Lưu.
 4. **Triển khai** → **Tùy chọn triển khai mới** → loại **Ứng dụng web**:
    *Thực thi dưới dạng*: **Tôi**; *Người có quyền truy cập*: **Bất kỳ ai**. Bấm Triển khai và cấp quyền khi được hỏi.
@@ -39,7 +41,7 @@ Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `c
 ### 1. Tạo dự án Apps Script
 
 1. Đăng nhập tài khoản Google mà bạn muốn cấp quyền truy cập bảng tính (đây sẽ là "chủ sở hữu").
-2. Mở <https://script.google.com> và chọn **Dự án mới** (New project). Đặt tên, ví dụ `gsheets-mcp`.
+2. Mở <https://script.google.com> và chọn **Dự án mới** (New project). Đặt tên, ví dụ `apps-script-mcp`.
 3. Đưa mã nguồn vào dự án, chọn một trong hai cách:
 
 **Cách A: dán thủ công**
@@ -55,7 +57,7 @@ Các mục dưới đây là cách cài chi tiết (nhiều file hoặc dùng `c
 npm install -g @google/clasp
 clasp login
 cd apps-script/src
-clasp create --type webapp --title gsheets-mcp   # hoặc: clasp clone <scriptId>
+clasp create --type webapp --title apps-script-mcp   # hoặc: clasp clone <scriptId>
 clasp push
 ```
 
@@ -68,7 +70,7 @@ clasp push
 3. Cấu hình:
    - **Thực thi với tư cách (Execute as):** `Tôi` (Me)
    - **Người có quyền truy cập (Who has access):** `Bất kỳ ai` (Anyone)
-4. Nhấn **Triển khai**. Google sẽ yêu cầu cấp quyền: chọn tài khoản, **Advanced > Go to gsheets-mcp (unsafe) > Allow**. Chỉ có hai quyền: Google Sheets và địa chỉ email. Không cần quyền Drive.
+4. Nhấn **Triển khai**. Google sẽ yêu cầu cấp quyền: chọn tài khoản, **Advanced > Go to apps-script-mcp (unsafe) > Allow**. Chỉ có hai quyền: Google Sheets và địa chỉ email. Không cần quyền Drive.
 5. Sao chép **URL ứng dụng web**, có dạng `https://script.google.com/macros/s/<id>/exec`.
 
 > "Anyone" là bắt buộc để máy chủ MCP gọi được mà không cần đăng nhập Google. An toàn nằm ở chữ ký HMAC trong từng yêu cầu: nếu chưa ghép nối hoặc chữ ký sai, không có gì được thực thi.
@@ -96,6 +98,48 @@ Máy chủ MCP chỉ truy cập được các bảng tính nằm trong danh sác
 
 Danh sách lưu trong ScriptProperties (giới hạn khoảng 9 KB, đủ cho khoảng vài chục bảng tính).
 
+## Chạy Apps Script (tùy chọn)
+
+Mặc định máy chủ MCP chỉ dùng được các action cố định trên bảng tính trong allowlist. Nếu bạn muốn Claude với tới cả Drive, Docs,
+Gmail, Lịch..., có thể bật action `script.eval` (tool `run_apps_script` phía máy chủ). Đây là ngoại lệ có chủ đích, và **rủi ro cao**.
+
+### Cách bật
+
+1. Mở trang quản trị Apps Script (URL web app, đăng nhập bằng tài khoản chủ sở hữu).
+2. Ở mục **Chạy Apps Script (nâng cao)**, đọc cảnh báo rồi bấm **Bật chạy script**. Chỉ chủ sở hữu bật/tắt được; máy chủ MCP và người ẩn danh thì không.
+3. Tạo token có scope `script.eval` (PAT: tick ô `script.eval` trong trang admin của máy chủ). Xem [README gốc](../README.md#chạy-apps-script-tùy-chọn-rủi-ro-cao).
+4. Muốn tắt: bấm lại nút ở mục trên. Có hiệu lực ngay.
+
+Trang quản trị cũng hiện 50 lần chạy gần nhất (thời gian, mã băm SHA-256 của mã, kết quả, thời lượng). Nhật ký **không** lưu mã, tham số
+hay kết quả; ai cần biết mã nào đã chạy thì đối chiếu mã băm. `ping` báo `evalEnabled` để trang admin của máy chủ hiển thị "Chạy script: bật/tắt".
+
+### Scope trong appsscript.json mới là ranh giới thật sự
+
+Allowlist bảng tính **không** áp dụng cho mã được chạy: mã có thể mở bất kỳ bảng tính nào tài khoản của bạn mở được. Điều duy nhất giới hạn
+mã là **các scope OAuth khai báo trong `appsscript.json`**: mã chỉ gọi được dịch vụ nào có scope tương ứng. Vì vậy hãy khai báo đúng những gì bạn muốn, không hơn.
+Mã cũng đọc được `PropertiesService` của dự án (kể cả khóa HMAC), nên chỉ bật khi bạn chấp nhận rủi ro này.
+
+`src/appsscript.json` (mặc định) chỉ có `spreadsheets` và `userinfo.email`. Với các scope này, mã chạy được cũng chỉ làm việc với Sheets.
+
+### Dùng appsscript.full.example.json
+
+1. Trong **Cài đặt dự án**, bật **Hiển thị tệp kê khai "appsscript.json" trong trình chỉnh sửa**.
+2. Mở `appsscript.full.example.json` (thư mục `apps-script/`), copy nội dung và dán đè vào tệp `appsscript.json` trong trình soạn thảo.
+3. **Xóa các dòng scope bạn không muốn** trước khi lưu. Mẫu khai báo: `spreadsheets`, `documents`, `drive`, `gmail.readonly`, `calendar`,
+   `script.external_request`, `userinfo.email`. Đừng giữ dư "cho tiện": mỗi scope là một cánh cửa mở cho mã do Claude viết.
+   - **`script.external_request` và Gmail là hai thứ rủi ro nhất**, vì cho phép đưa dữ liệu ra ngoài (gọi `UrlFetchApp` tới máy chủ bất kỳ, gửi hoặc đọc email). Nếu không thật sự cần, xóa chúng đầu tiên.
+   - `drive` là toàn bộ Drive (đọc, sửa, xóa, chia sẻ). Nếu đủ dùng, hãy thay bằng `drive.readonly` hoặc `drive.file`.
+4. Lưu, rồi **Triển khai > Quản lý bản triển khai > Sửa > Phiên bản mới**. Bạn sẽ được yêu cầu cấp quyền lại; URL giữ nguyên nên không cần ghép nối lại.
+
+Muốn thu hẹp lại: sửa `appsscript.json` bỏ scope, triển khai phiên bản mới, và (tùy chọn) thu hồi quyền cũ tại <https://myaccount.google.com/permissions>.
+
+### Giới hạn
+
+- `code` tối đa 100 000 ký tự; là thân của một hàm, được chạy với `args` và `log`, và phải `return` giá trị JSON được (tối đa 4 MB sau khi tuần tự hóa; `undefined` thành `null`).
+- `log(...)`: mỗi dòng tối đa 2 000 ký tự, tối đa 200 dòng.
+- Lỗi được trả về dạng `EVAL_ERROR` kèm log đã ghi trước khi lỗi. Đây là lỗi duy nhất có thể chứa dữ liệu, vì chính bạn yêu cầu chạy mã.
+- Apps Script dừng mọi lần chạy sau 6 phút, và một lần chạy quá thời gian sẽ không kịp ghi vào nhật ký.
+
 ## Cập nhật mã nguồn
 
 Sau khi sửa mã, việc lưu hoặc `clasp push` **chưa** ảnh hưởng đến URL `/exec` đang chạy. Bạn phải tạo phiên bản mới:
@@ -122,4 +166,5 @@ Bộ kiểm thử nạp `src/*.js` vào một sandbox `vm` với bản giả l�
 - Khóa HMAC nằm trong ScriptProperties của dự án. Ai sửa được dự án Apps Script đều đọc được, vì vậy không chia sẻ quyền chỉnh sửa dự án.
 - Mã ghép nối, khóa bí mật và nội dung ô không bao giờ được ghi log.
 - Allowlist được kiểm tra trước khi mở bảng tính; lỗi nội bộ (`INTERNAL`) không kèm dữ liệu hay stack trace.
+- Chạy script (`script.eval`) tắt mặc định và bỏ qua allowlist khi bật; xem [Chạy Apps Script](#chạy-apps-script-tùy-chọn).
 - Giới hạn của Apps Script (thời gian chạy, hạn mức) vẫn áp dụng. `batch.update` kiểm tra tất cả thao tác trước khi thực hiện, nhưng Google Sheets không có giao dịch: nếu Sheets báo lỗi giữa chừng, các thao tác trước đó vẫn được giữ lại.

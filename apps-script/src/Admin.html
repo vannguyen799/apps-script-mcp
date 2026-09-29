@@ -30,11 +30,12 @@
   #msg.err { color:var(--danger); }
   #msg.ok { color:var(--ok); }
   .table-wrap { overflow-x:auto; }
+  .warn { border:1px solid var(--danger); background:#fdecea; color:var(--danger); border-radius:6px; padding:10px 12px; margin:0 0 12px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>gsheets-mcp - Quản trị Apps Script</h1>
+  <h1>apps-script-mcp - Quản trị Apps Script</h1>
   <div id="msg" role="status"></div>
 
   <section>
@@ -76,6 +77,33 @@
   </section>
 
   <section>
+    <h2>Chạy Apps Script (nâng cao)</h2>
+    <div class="warn" role="alert">
+      <strong>Cảnh báo.</strong> Khi bật, Claude có thể chạy mã tùy ý bằng tài khoản Google của bạn. Nội dung bảng tính, email hay tệp
+      mà Claude đọc có thể chứa lệnh ẩn (prompt injection) khiến nó chạy mã ngoài ý muốn. Danh sách bảng tính được phép
+      <strong>không</strong> áp dụng cho mã này. Ranh giới thật sự là các scope OAuth khai báo trong <code>appsscript.json</code>:
+      hãy xóa những scope bạn không muốn cấp (nhất là <code>script.external_request</code> và Gmail vì chúng cho phép đưa dữ liệu ra ngoài).
+    </div>
+    <div class="row">
+      <span id="evalBadge" class="badge">Đang tải...</span>
+      <button id="evalBtn" class="danger" disabled>...</button>
+    </div>
+    <div id="evalInfo" class="muted" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:12px">
+      <strong>Nhật ký 50 lần chạy gần nhất</strong>
+      <button id="auditBtn">Tải lại</button>
+    </div>
+    <p class="muted" style="margin:4px 0 0">Chỉ lưu mã băm SHA-256 của mã, không lưu nội dung mã, tham số hay kết quả.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Thời gian</th><th>SHA-256 của mã</th><th>Kết quả</th><th>Thời lượng</th></tr></thead>
+        <tbody id="auditRows"></tbody>
+      </table>
+    </div>
+    <div id="auditEmpty" class="muted" style="margin-top:8px;display:none">Chưa có lần chạy nào.</div>
+  </section>
+
+  <section>
     <h2>URL ứng dụng web</h2>
     <p class="muted" style="margin-top:0">Dán URL này vào trang quản trị của máy chủ MCP.</p>
     <div class="row">
@@ -96,13 +124,14 @@
     el.textContent = text || '';
     el.className = kind || '';
   }
-  function run(fnName, args, onOk) {
+  function run(fnName, args, onOk, onFail) {
     msg('');
     var r = google.script.run
       .withSuccessHandler(function (res) { onOk && onOk(res); })
       .withFailureHandler(function (err) {
         var m = err && err.message ? String(err.message).replace(/^Error:\s*/, '') : 'Đã xảy ra lỗi.';
         msg(m === 'ACCESS_DENIED' ? 'Truy cập bị từ chối.' : m, 'err');
+        onFail && onFail();
       });
     r[fnName].apply(r, args);
   }
@@ -139,6 +168,36 @@
       ? 'Đang chờ máy chủ xác nhận mã (hết hạn lúc ' + fmtTime(state.pendingExpiresAt) + ').' : '';
     $('urlInput').value = state.webAppUrl || '';
     renderSheets();
+    renderEval();
+  }
+
+  function renderEval() {
+    var on = !!state.evalEnabled;
+    var badge = $('evalBadge');
+    badge.textContent = on ? 'Đang bật' : 'Đang tắt';
+    badge.className = 'badge' + (on ? ' ok' : '');
+    var btn = $('evalBtn');
+    btn.disabled = false;
+    btn.textContent = on ? 'Tắt chạy script' : 'Bật chạy script';
+    btn.className = on ? '' : 'danger';
+    $('evalInfo').textContent = state.evalChangedAt ? 'Thay đổi lần cuối: ' + fmtTime(state.evalChangedAt) : '';
+  }
+
+  function loadAudit() {
+    run('admin_getEvalAudit', [], function (list) {
+      var body = $('auditRows');
+      body.textContent = '';
+      $('auditEmpty').style.display = list.length ? 'none' : '';
+      list.forEach(function (e) {
+        var tr = document.createElement('tr');
+        var td = function (node) { var c = el('td'); c.appendChild(node); tr.appendChild(c); };
+        td(document.createTextNode(fmtTime(e.at)));
+        td(el('span', String(e.codeSha256).slice(0, 16) + '...', 'mono'));
+        td(el('span', e.ok ? 'Thành công' : 'Lỗi' + (e.errorName ? ': ' + e.errorName : ''), 'badge' + (e.ok ? ' ok' : '')));
+        td(document.createTextNode(e.durationMs + ' ms'));
+        body.appendChild(tr);
+      });
+    });
   }
 
   function renderSheets() {
@@ -211,6 +270,16 @@
       state.spreadsheets = res.spreadsheets; renderSheets(); msg('Đã thêm bảng tính.', 'ok');
     });
   };
+  $('evalBtn').onclick = function () {
+    var enable = !state.evalEnabled;
+    if (enable && !confirm('Bật chạy script? Claude sẽ chạy được mã tùy ý bằng tài khoản Google của bạn, trong phạm vi các scope trong appsscript.json.')) return;
+    $('evalBtn').disabled = true;
+    run('admin_setEvalEnabled', [enable], function (res) {
+      state.evalEnabled = res.evalEnabled; state.evalChangedAt = res.evalChangedAt; renderEval();
+      msg(enable ? 'Đã bật chạy script.' : 'Đã tắt chạy script.', 'ok');
+    }, renderEval);
+  };
+  $('auditBtn').onclick = loadAudit;
   $('copyBtn').onclick = function () {
     var input = $('urlInput');
     var done = function () { msg('Đã sao chép URL.', 'ok'); };
@@ -221,6 +290,7 @@
     }
   };
   load();
+  loadAudit();
 })();
 </script>
 </body>

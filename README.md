@@ -1,9 +1,10 @@
-# gsheets-mcp
+# apps-script-mcp
 
-**Cho Claude đọc và ghi Google Sheets, mà không cần Google Cloud Project, Service Account hay OAuth client.**
+**Cho Claude làm việc với Google Sheets, và tùy chọn với mọi thứ Apps Script của bạn chạm tới được (Drive, Docs,
+Gmail, Calendar…), mà không cần Google Cloud Project, Service Account hay OAuth client.**
 
 ```
-Claude / MCP client ──OAuth 2.1 / PAT──▶ Docker MCP server ──HMAC──▶ Google Apps Script ──▶ Google Sheets
+Claude / MCP client ──OAuth 2.1 / PAT──▶ Docker MCP server ──HMAC──▶ Google Apps Script ──▶ Google Sheets / Workspace
                                           (máy của bạn)               (tài khoản Google của bạn)
 ```
 
@@ -28,12 +29,12 @@ Mở Docker Desktop, rồi chạy **một dòng**:
 
 **Windows** (PowerShell):
 ```powershell
-irm https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.ps1 | iex
 ```
 
 **macOS / Linux**:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.sh | sh
 ```
 
 Script tự tải image, chạy container với đúng port và volume, rồi mở trình duyệt vào **http://localhost:8788**
@@ -44,10 +45,10 @@ Muốn nâng cấp, chạy lại đúng dòng đó; dữ liệu (pairing, mật 
 <summary>Cách khác: bấm trên giao diện Docker Desktop, hoặc dùng docker compose</summary>
 
 **Docker Desktop:**
-1. Tìm `vannguyen799/gsheets-mcp` và bấm **Run**.
+1. Tìm `vannguyen799/apps-script-mcp` và bấm **Run**.
 2. Mở **Optional settings** và điền:
    - Ports: `8787` → `8787`, `8788` → `8788`.
-   - Volumes: tên `gsmcp-data`, đường dẫn trong container là `/data`.
+   - Volumes: tên `asmcp-data`, đường dẫn trong container là `/data`.
 3. Xem setup token ở tab **Logs** của container (dòng `Setup token: …`).
 
 Lưu ý: giao diện Docker Desktop mở cổng admin 8788 cho cả mạng LAN (vẫn cần mật khẩu). Script một dòng ở trên chỉ mở
@@ -55,16 +56,16 @@ cổng này cho `localhost`, nên an toàn hơn.
 
 **docker compose** (có tunnel Cloudflare kèm theo):
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/docker-compose.yml
 docker compose up -d
-docker compose logs gsheets-mcp | grep "Setup token"
+docker compose logs apps-script-mcp | grep "Setup token"
 ```
 </details>
 
 ### 2. Triển khai Apps Script (dán 1 file)
 
 1. Vào <https://script.google.com> → **New project**.
-2. Copy toàn bộ [`apps-script/Code.gs`](https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/apps-script/Code.gs)
+2. Copy toàn bộ [`apps-script/Code.gs`](https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/apps-script/Code.gs)
    rồi dán đè vào `Code.gs` trong trình soạn thảo, bấm Lưu.
 3. **Deploy → New deployment → Web app**, chọn *Execute as: Me* và *Who has access: Anyone*, rồi cấp quyền bằng tài
    khoản Google của bạn.
@@ -86,7 +87,7 @@ Trong trang Apps Script, thêm spreadsheet bằng URL hoặc ID. Đặt alias (v
 
 - **Claude Code / Claude Desktop** (máy local): tạo Personal Access Token trong trang admin, rồi chạy:
   ```bash
-  claude mcp add --transport http gsheets http://localhost:8787/mcp --header "Authorization: Bearer gsmcp_pat_..."
+  claude mcp add --transport http apps-script http://localhost:8787/mcp --header "Authorization: Bearer asmcp_pat_..."
   ```
 - **claude.ai (Custom connector)**: cần một URL HTTPS public, xem [Public qua tunnel](#public-qua-tunnel).
   Sau đó thêm connector với URL `https://<domain>/mcp`. Claude sẽ tự mở trang đăng nhập OAuth, bạn nhập mật khẩu
@@ -107,7 +108,32 @@ Xong. Thử hỏi Claude: *“Đọc Sales!A1:F100 trong spreadsheet sales”*.
 | `append_rows` | ghi | Thêm dòng vào cuối sheet |
 | `batch_update` | ghi | Nhiều thao tác write / append / clear; validate toàn bộ trước khi chạy |
 
-Không có tool nào chạy code tùy ý. Công thức (`=…`, `+…`, `-…`, `@…`) bị từ chối trừ khi gọi với `allow_formulas: true`.
+Mặc định không có tool nào chạy code tùy ý (tool `run_apps_script` là tùy chọn, tắt sẵn, xem [Chạy Apps Script](#chạy-apps-script-tùy-chọn-rủi-ro-cao)). Công thức (`=…`, `+…`, `-…`, `@…`) bị từ chối trừ khi gọi với `allow_formulas: true`.
+
+## Chạy Apps Script (tùy chọn, rủi ro cao)
+
+Tool `run_apps_script {code, args?}` cho Claude chạy JavaScript ngay trên Apps Script của bạn, để với tới những thứ ngoài
+Sheets (Drive, Docs, Gmail, Lịch...). Mặc định **tắt** và cần bật ở **hai** nơi:
+
+1. **Apps Script**: mở trang quản trị Apps Script (chủ sở hữu), mục *Chạy Apps Script (nâng cao)*, bấm *Bật chạy script*.
+   Máy chủ MCP không thể tự bật. Hướng dẫn chi tiết và cách khai báo scope: [apps-script/README.md](apps-script/README.md#chạy-apps-script-tùy-chọn).
+2. **Token**: token phải có scope `script.eval`. Scope này không nằm trong mặc định, token và PAT cũ không tự có.
+
+**Rủi ro:**
+
+- **Prompt injection.** Nội dung bảng tính, email hay tệp mà Claude đọc có thể chứa lệnh ẩn khiến nó gọi `run_apps_script`
+  với mã do kẻ khác viết.
+- **Allowlist bị bỏ qua.** Danh sách bảng tính và quyền đọc/ghi từng file **không** áp dụng cho mã được chạy. Ranh giới thật sự
+  là các scope trong `appsscript.json`; hãy xóa những scope bạn không cần (nhất là `script.external_request` và Gmail, vì chúng cho phép đưa dữ liệu ra ngoài).
+- Mã chạy với toàn quyền của tài khoản Google của bạn, trong giới hạn 6 phút của Apps Script. Nhật ký trên Apps Script chỉ lưu mã băm của mã (50 lần gần nhất), không lưu nội dung.
+
+**Claude Code / Claude Desktop (PAT).** Trong trang admin, mục *Personal Access Tokens*, tick thêm ô `script.eval` (mặc định không tick)
+khi tạo token, rồi thêm connector như ở bước 5 với token đó. Nên tạo một token riêng cho việc này và thu hồi khi không dùng.
+
+**claude.ai (OAuth).** Client tự quyết định xin scope nào; server không tự thêm `script.eval` cho ai. Một client không gửi
+`scope` khi xin quyền chỉ nhận mặc định `sheets.read sheets.write` (kể cả khi lúc đăng ký DCR nó khai `scope` chứa `script.eval`),
+và metadata OAuth cũng chỉ quảng bá hai scope Sheets. Vì vậy **connector claude.ai chỉ có quyền Sheets** trừ khi bạn dùng đường PAT
+ở trên (một PAT có thể dán vào client hỗ trợ header tùy chỉnh). Nếu một client cố tình xin `script.eval`, trang đồng ý sẽ hiện cảnh báo đỏ và bạn vẫn phải nhập mật khẩu admin.
 
 ## Public qua tunnel
 
@@ -115,7 +141,7 @@ Chỉ cổng **8787** được phép public (gồm `/mcp`, OAuth, `/healthz`). T
 
 Cách dùng Cloudflare named tunnel (URL cố định):
 
-1. Trong Cloudflare Zero Trust, tạo tunnel và trỏ public hostname tới `http://gsheets-mcp:8787`.
+1. Trong Cloudflare Zero Trust, tạo tunnel và trỏ public hostname tới `http://apps-script-mcp:8787`.
 2. Tạo file `.env`:
    ```env
    TUNNEL_TOKEN=...
@@ -133,7 +159,7 @@ Ba lớp credential độc lập, lộ một lớp không lộ lớp khác:
 
 | Lớp | Cơ chế |
 |---|---|
-| Claude → MCP | OAuth 2.1 + PKCE (DCR, consent cần mật khẩu admin, access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Scope `sheets.read` / `sheets.write`. Chỉ lưu hash. Không đặt token trong URL. |
+| Claude → MCP | OAuth 2.1 + PKCE (DCR, consent cần mật khẩu admin, access token 1h, refresh token xoay vòng có phát hiện reuse) hoặc PAT. Scope `sheets.read` / `sheets.write` (và `script.eval`, chỉ khi xin rõ ràng). Chỉ lưu hash. Không đặt token trong URL. |
 | Trang admin | Chỉ loopback, setup token một lần, mật khẩu scrypt, cookie session HttpOnly/SameSite=Strict, CSRF token, kiểm tra Host/Origin, rate-limit. |
 | MCP → Apps Script | HMAC-SHA256 trên mọi request (timestamp ±5 phút, nonce chống replay), response cũng được ký. Secret được tạo lúc pairing và không bao giờ hiển thị. |
 | Apps Script → Sheets | Quyền Google của chính bạn. Allowlist kiểm tra *trước khi* mở file, và quyền ghi tách riêng cho từng file. |
@@ -149,7 +175,7 @@ cd server && npm ci && npm run build && npm test    # server, gồm test chéo v
 docker compose up -d --build                        # build image từ source
 ```
 
-Image được build tự động lên `ghcr.io/vannguyen799/gsheets-mcp`, và lên Docker Hub `vannguyen799/gsheets-mcp` khi repo có secret
+Image được build tự động lên `ghcr.io/vannguyen799/apps-script-mcp`, và lên Docker Hub `vannguyen799/apps-script-mcp` khi repo có secret
 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` (`edge` từ `main`; `x.y.z` / `latest` khi push tag `vX.Y.Z`).
 
 Kiến trúc: tầng tool/business chỉ phụ thuộc vào port `SheetsGateway`. Apps Script chỉ là một adapter, nên sau này có

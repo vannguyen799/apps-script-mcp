@@ -1,11 +1,11 @@
 {
-  "name": "gsheets-mcp-apps-script",
+  "name": "apps-script-mcp-apps-script",
   "version": "1.0.0",
   "private": true,
-  "description": "Google Apps Script half of gsheets-mcp, with a dependency-free Node test harness.",
+  "description": "Google Apps Script half of apps-script-mcp, with a dependency-free Node test harness.",
   "scripts": {
     "bundle": "node scripts/bundle.js",
     "test": "node --test \"test/*.test.js\"",
-    "test:bundle": "node scripts/bundle.js && GSMCP_BUNDLE=1 node --test \"test/*.test.js\""
+    "test:bundle": "node scripts/bundle.js && ASMCP_BUNDLE=1 node --test \"test/*.test.js\""
   }
 }

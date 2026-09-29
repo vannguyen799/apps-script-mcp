@@ -13,7 +13,7 @@ var PAIR_ALPHABET_RE_ = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
 /** Throws a coded error understood by the request handler. */
 function fail_(code, message) {
   var e = new Error(message);
-  e.gsmcpCode = code;
+  e.asmcpCode = code;
   throw e;
 }
 
@@ -57,7 +57,7 @@ function normalizePairingCode_(code) {
 }
 
 function pairingCodeHash_(normalizedCode) {
-  return sha256Hex_('gsmcp-pair-v1:' + normalizedCode);
+  return sha256Hex_('asmcp-pair-v1:' + normalizedCode);
 }
 
 function isValidCode_(normalized) {
@@ -93,7 +93,7 @@ function processRequest_(text) {
     if (req.kind === 'call') return handleCall_(req);
     return unsignedError_('BAD_REQUEST', 'Unknown request kind');
   } catch (err) {
-    if (err && err.gsmcpCode) return unsignedError_(err.gsmcpCode, err.message);
+    if (err && err.asmcpCode) return unsignedError_(err.asmcpCode, err.message);
     return unsignedError_('INTERNAL', 'Internal error');
   }
 }
@@ -174,8 +174,10 @@ function handleCall_(req) {
   var secret = pairing.secret;
   var nonce = req.nonce;
   var reply = function (obj) { return signedEnvelope_(secret, nonce, obj); };
-  var replyError = function (code, message) {
-    return reply({ ok: false, error: { code: code, message: message } });
+  var replyError = function (code, message, logs) {
+    var error = { code: code, message: message };
+    if (logs) error.logs = logs; // only script.eval errors carry logs
+    return reply({ ok: false, error: error });
   };
   try {
     // 5. replay
@@ -203,7 +205,7 @@ function handleCall_(req) {
     var result = runAction_(payload.action, params);
     return reply({ ok: true, result: result });
   } catch (err) {
-    if (err && err.gsmcpCode) return replyError(err.gsmcpCode, err.message);
+    if (err && err.asmcpCode) return replyError(err.asmcpCode, err.message, err.asmcpLogs);
     // No stack, no cell data: a fixed message only.
     return replyError('INTERNAL', 'Internal error');
   }

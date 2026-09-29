@@ -1,4 +1,4 @@
-# gsheets-mcp — Design & Wire Contract
+# apps-script-mcp — Design & Wire Contract
 
 Claude / MCP client → **Docker MCP server** (`server/`) → **Google Apps Script** (`apps-script/`) → Google Sheets.
 
@@ -28,7 +28,7 @@ The business layer depends on a `SheetsGateway` port. `AppsScriptGateway` is one
 - First start with no admin password: server generates a one-time **setup token** (random 24 bytes, b64url),
   prints it to stdout once (`Setup token: ...`), keeps only its hash. The UI asks for it + a new password (min 10 chars).
 - Password stored as scrypt (N=2^15, r=8, p=1, 16-byte salt, 64-byte key).
-- Session: random 32-byte id, cookie `gsmcp_admin` `HttpOnly; SameSite=Strict; Path=/` (+`Secure` when request is https),
+- Session: random 32-byte id, cookie `asmcp_admin` `HttpOnly; SameSite=Strict; Path=/` (+`Secure` when request is https),
   12 h idle expiry, in-memory store.
 - Every state-changing admin request: `Content-Type: application/json` + header `X-CSRF-Token` equal to the
   session's CSRF token.
@@ -52,7 +52,7 @@ MCP Authorization spec (OAuth 2.1). Use the SDK's `mcpAuthRouter` + `requireBear
 - Scopes: `sheets.read`, `sheets.write`. Default requested if omitted: both. Read tools need `sheets.read`,
   write tools need `sheets.write`.
 - **Personal Access Tokens** (for Claude Code / Desktop via header): created in admin UI with chosen scopes and a label,
-  prefix `gsmcp_pat_`, shown **once**, stored hashed, revocable, `lastUsedAt` tracked.
+  prefix `asmcp_pat_`, shown **once**, stored hashed, revocable, `lastUsedAt` tracked.
 - No token in URL paths or query strings, ever.
 - Unauthenticated `/mcp` → 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`.
 - Rate limit `/mcp`: 120 req/min per token.
@@ -84,7 +84,7 @@ uppercase, remove every char not in `[A-Z0-9]`. Code TTL 10 min on the server si
 1. Admin (Docker UI) enters the Apps Script web app URL (must match `^https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec$`)
    and clicks *Pair*. Server creates `pending = {code, secret (fresh), expiresAt}` and state `pairing_pending`.
 2. User opens the Apps Script admin page (`doGet`, owner-only, §5.1), types the code. Apps Script stores
-   `pairing.pending = {codeHash: sha256hex("gsmcp-pair-v1:" + normalizedCode), expiresAt: now+10min, attempts: 0}`.
+   `pairing.pending = {codeHash: sha256hex("asmcp-pair-v1:" + normalizedCode), expiresAt: now+10min, attempts: 0}`.
 3. Server polls every 4 s (until its code expires) with:
    ```json
    {"v":1,"kind":"pair","instanceId":"<uuid>","instanceLabel":"<string ≤ 64>","pairingCode":"<normalized>","secret":"<b64url>","ts":1234}
@@ -178,8 +178,8 @@ so they are not callable from `google.script.run`.
   edit alias/access (`read`/`write`), remove.
 - Shows its own web app URL (`ScriptApp.getService().getUrl()`) with a copy button.
 
-Storage: `PropertiesService.getScriptProperties()` keys `gsmcp.pairing`, `gsmcp.pairing.pending`,
-`gsmcp.spreadsheets` (JSON). OAuth scopes (manifest): exactly `https://www.googleapis.com/auth/spreadsheets` and
+Storage: `PropertiesService.getScriptProperties()` keys `asmcp.pairing`, `asmcp.pairing.pending`,
+`asmcp.spreadsheets` (JSON). OAuth scopes (manifest): exactly `https://www.googleapis.com/auth/spreadsheets` and
 `https://www.googleapis.com/auth/userinfo.email`. No Drive scope.
 
 ## 6. MCP server tools
@@ -199,7 +199,7 @@ Tools take a `spreadsheet` argument = alias, exact name, or ID; the server resol
 | `batch_update` `{spreadsheet, operations, allow_formulas?}` | write | destructive |
 
 The server validates the same limits/shapes as §4.5 before calling (fail fast with a clear message).
-No tool evaluates code; the action whitelist is fixed.
+No tool evaluates code, except the opt-in `run_apps_script` of §8; the action whitelist is otherwise fixed.
 
 ## 7. Server state & logging
 
@@ -212,3 +212,50 @@ Health ping every 5 min when connected, and on demand.
 
 Logs: one JSON line per event. Never logged: secrets, tokens, passwords, pairing codes, request/response
 bodies, cell values, search queries. Allowed: action, spreadsheetId, dimensions, duration, result code.
+
+## 8. Script evaluation (opt-in, owner's responsibility)
+
+A deliberate exception to "fixed actions only", for owners who want Claude to reach anything their Apps Script
+can reach (Drive, Docs, Gmail, Calendar…). **Off by default.** The spreadsheet allowlist does NOT apply to
+evaluated code; the only capability boundary is the OAuth scopes the owner puts in `appsscript.json`.
+
+### 8.1 Apps Script side
+- Script property `asmcp.eval` = `{"enabled": bool, "changedAt": iso}`. Only the owner admin page can change it
+  (`admin_setEvalEnabled(bool)`, owner-gated). The MCP server cannot enable it.
+- Action `script.eval` params `{code: string (≤ 100 000 chars), args?: any (JSON)}`:
+  - disabled → `EVAL_DISABLED`.
+  - runs `new Function('args', 'log', code)(args, log)`. `log(...parts)` appends a line (each part
+    `String()`-ed or JSON-stringified, line ≤ 2 000 chars, ≤ 200 lines) to a buffer returned to the caller.
+  - result → `{value, logs, durationMs}`; `value` is the return value passed through
+    `JSON.parse(JSON.stringify(v))` (undefined → null; Date → ISO string by JSON). A value that cannot be
+    serialized → `EVAL_ERROR` "Return value is not JSON-serializable". Serialized `value` > 4 MB → `LIMIT_EXCEEDED`.
+  - a thrown error → `EVAL_ERROR` whose message is `name + ": " + message` (≤ 2 000 chars) and the logs so far are
+    included as `error.logs`. This is the one error that may contain data, because the owner asked for it.
+- Audit ring buffer in script property `asmcp.evalAudit`: last 50 entries `{at, codeSha256, ok, durationMs, errorName?}`.
+  Never the code text, args or results. Shown on the admin page with the toggle.
+- `ping` result gains `evalEnabled: boolean`.
+- New error codes: `EVAL_DISABLED`, `EVAL_ERROR`. Only a signature-verified `EVAL_ERROR` may carry the long message and `logs`
+  on the server side; the server truncates any other error to 300 characters and drops `logs`.
+- Admin page: section "Chạy Apps Script (nâng cao)" with the toggle and a red warning (prompt injection; allowlist is
+  bypassed; scopes in appsscript.json are the real boundary), and the audit table.
+- `appsscript.full.example.json`: a manifest example that declares common scopes (spreadsheets, documents, drive,
+  gmail.readonly, calendar, script.external_request, userinfo.email) with a comment in the README that owners
+  should delete the scopes they don't want. Evaluated code can only call services whose scopes are declared.
+
+### 8.2 Server side
+- A `script.eval` call waits up to 6.5 minutes for the answer (Apps Script's own limit is 6); every other action keeps the 30 s timeout.
+- New optional port `ScriptEvaluator { evaluate(code, args): Promise<{value, logs, durationMs}> }`. It is separate
+  from `SheetsGateway`; a future Google-API backend simply does not provide it. `AppsScriptGateway` implements both.
+- OAuth scope `script.eval`. It is **not** part of the default scopes; a client must request it explicitly. The consent
+  page shows it with a red warning line. PAT creation offers it as an unchecked checkbox.
+- The OAuth server only honours the `scope` of the authorization request: a client that sends none gets the defaults, and the
+  `scope` a client registered with in DCR is ignored. Metadata (`scopes_supported`) advertises only the default scopes, because
+  clients may request every advertised scope. Refresh cannot widen a grant, so tokens and PATs issued before never gain it.
+- Tool `run_apps_script {code, args?}` needs scope `script.eval`. Annotations: `destructiveHint: true`,
+  `openWorldHint: true`. It is registered only when an evaluator is available. The description says:
+  - the code is a function body that is run with `args` and `log` and must `return` a JSON-serializable value;
+  - there is a 6-minute Apps Script limit;
+  - it errors when the owner has not enabled it on the Apps Script page.
+  `EVAL_DISABLED` maps to a clear message telling the user where to enable it.
+- The admin UI status shows "Chạy script: bật/tắt" from the last ping.
+- Logs: action name, durationMs, resultCode only. Never code, args, values or eval error messages.

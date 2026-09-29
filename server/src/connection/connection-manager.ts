@@ -27,6 +27,8 @@ import type {
   WriteResult,
 } from "../core/sheets/gateway.js";
 import { GatewayError } from "../core/sheets/gateway.js";
+import type { EvalResult, ScriptEvaluator } from "../core/script/evaluator.js";
+import { isScriptEvaluator } from "../core/script/evaluator.js";
 import type { Logger } from "../log.js";
 import { nullLogger } from "../log.js";
 import type { AppsScriptLink } from "../store/state-store.js";
@@ -41,6 +43,8 @@ export interface ConnectionStatus {
   pairedAt: number | null;
   appsScriptUrl: string | null;
   lastCheckedAt: number | null;
+  /** Owner's script-evaluation switch as of the last ping; null when unknown (not connected, ping failed). */
+  evalEnabled: boolean | null;
   pairing: { code: string; expiresAt: number; url: string } | null;
 }
 
@@ -64,6 +68,7 @@ export class ConnectionManager {
   private errorMessage: string | null = null;
   private notice: string | null = null;
   private lastCheckedAt: number | null = null;
+  private evalEnabled: boolean | null = null;
   private polling = false;
   private pollTimer: NodeJS.Timeout | undefined;
   private healthTimer: NodeJS.Timeout | undefined;
@@ -82,6 +87,7 @@ export class ConnectionManager {
 
   private changed(): void {
     this.cachedGateway = null;
+    this.evalEnabled = null;
     for (const l of this.listeners) l();
   }
 
@@ -127,6 +133,7 @@ export class ConnectionManager {
       pairedAt: s.link?.pairedAt ?? null,
       appsScriptUrl: s.link?.url ?? pending?.url ?? null,
       lastCheckedAt: this.lastCheckedAt,
+      evalEnabled: s.link ? this.evalEnabled : null,
       pairing: pending ? { code: formatPairingCode(pending.code), expiresAt: pending.expiresAt, url: pending.url } : null,
     };
   }
@@ -221,6 +228,7 @@ export class ConnectionManager {
       const r = await this.gateway.ping();
       this.errorMessage = null;
       this.lastCheckedAt = this.now();
+      this.evalEnabled = r.evalEnabled ?? null;
       const link = this.store.state.link;
       if (link && link.account !== r.account) {
         await this.store.update((s) => {
@@ -229,6 +237,7 @@ export class ConnectionManager {
       }
     } catch (e) {
       this.lastCheckedAt = this.now();
+      this.evalEnabled = null;
       this.errorMessage = e instanceof GatewayError ? `${e.code}: ${e.message}` : "Ping thất bại.";
       this.log.warn("health_ping_failed", { resultCode: e instanceof GatewayError ? e.code : "INTERNAL" });
     }
@@ -245,6 +254,7 @@ export class ConnectionManager {
     this.errorMessage = null;
     this.notice = null;
     this.lastCheckedAt = null;
+    this.evalEnabled = null;
     this.changed();
     this.log.info("unpaired");
     return this.status();
@@ -276,5 +286,14 @@ export class ConnectionManager {
     appendRows: async (r: AppendRequest): Promise<AppendResult> => this.currentGateway().appendRows(r),
     search: async (r: SearchRequest): Promise<SearchResult> => this.currentGateway().search(r),
     batchUpdate: async (r: BatchRequest): Promise<BatchResult> => this.currentGateway().batchUpdate(r),
+  };
+
+  /** A ScriptEvaluator that always targets the current link; fails cleanly when that backend cannot evaluate. */
+  readonly evaluator: ScriptEvaluator = {
+    evaluate: async (code: string, args?: unknown): Promise<EvalResult> => {
+      const gw = this.currentGateway();
+      if (!isScriptEvaluator(gw)) throw new GatewayError("UNKNOWN_ACTION", "This backend cannot run scripts.");
+      return gw.evaluate(code, args);
+    },
   };
 }

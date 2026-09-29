@@ -21,12 +21,12 @@ test('pairing success returns a proof verifiable with Node crypto and stores the
   const proof = crypto.createHmac('sha256', Buffer.from(secret, 'utf8'))
     .update(`v1\npair-ack\n${instanceId}\n${ts}`).digest('hex');
   assert.equal(body.result.proof, proof);
-  const stored = JSON.parse(sb.props.get('gsmcp.pairing'));
+  const stored = JSON.parse(sb.props.get('asmcp.pairing'));
   assert.equal(stored.instanceId, instanceId);
   assert.equal(stored.instanceLabel, 'My Docker');
   assert.equal(stored.secret, secret);
   assert.ok(stored.pairedAt);
-  assert.equal(sb.props.has('gsmcp.pairing.pending'), false);
+  assert.equal(sb.props.has('asmcp.pairing.pending'), false);
   // the code is single use
   assert.equal(parseBody(sb.doPost(pairReq(sb))).error.code, 'PAIRING_NOT_READY');
 });
@@ -34,8 +34,8 @@ test('pairing success returns a proof verifiable with Node crypto and stores the
 test('pending record stores only the salted hash and 10 minute expiry', () => {
   const sb = createSandbox();
   sb.enterPairingCode('ABCD-2345');
-  const pending = JSON.parse(sb.props.get('gsmcp.pairing.pending'));
-  assert.equal(pending.codeHash, crypto.createHash('sha256').update('gsmcp-pair-v1:ABCD2345').digest('hex'));
+  const pending = JSON.parse(sb.props.get('asmcp.pairing.pending'));
+  assert.equal(pending.codeHash, crypto.createHash('sha256').update('asmcp-pair-v1:ABCD2345').digest('hex'));
   assert.equal(pending.expiresAt, sb.clock.now + 600000);
   assert.equal(pending.attempts, 0);
   assert.equal(JSON.stringify(pending).includes('ABCD'), false);
@@ -46,7 +46,7 @@ test('PAIRING_NOT_READY when nothing is pending, and no attempt is counted', () 
   const env = sb.doPost(pairReq(sb));
   assert.equal(parseBody(env).error.code, 'PAIRING_NOT_READY');
   assert.equal(env.sig, null);
-  assert.equal(sb.props.has('gsmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairing'), false);
 });
 
 test('expired pending code is PAIRING_NOT_READY', () => {
@@ -54,7 +54,7 @@ test('expired pending code is PAIRING_NOT_READY', () => {
   sb.enterPairingCode('ABCD-2345');
   sb.clock.advance(600001);
   assert.equal(parseBody(sb.doPost(pairReq(sb))).error.code, 'PAIRING_NOT_READY');
-  assert.equal(sb.props.has('gsmcp.pairing.pending'), false);
+  assert.equal(sb.props.has('asmcp.pairing.pending'), false);
 });
 
 test('wrong code: PAIRING_INVALID x5 then pending is deleted (even the right code fails)', () => {
@@ -62,11 +62,11 @@ test('wrong code: PAIRING_INVALID x5 then pending is deleted (even the right cod
   sb.enterPairingCode('ABCD-2345');
   for (let i = 1; i <= 5; i++) {
     assert.equal(parseBody(sb.doPost(pairReq(sb, { pairingCode: 'ZZZZ2222' }))).error.code, 'PAIRING_INVALID');
-    if (i < 5) assert.equal(JSON.parse(sb.props.get('gsmcp.pairing.pending')).attempts, i);
+    if (i < 5) assert.equal(JSON.parse(sb.props.get('asmcp.pairing.pending')).attempts, i);
   }
-  assert.equal(sb.props.has('gsmcp.pairing.pending'), false);
+  assert.equal(sb.props.has('asmcp.pairing.pending'), false);
   assert.equal(parseBody(sb.doPost(pairReq(sb))).error.code, 'PAIRING_NOT_READY');
-  assert.equal(sb.props.has('gsmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairing'), false);
 });
 
 test('4 wrong attempts then the right code still succeeds', () => {
@@ -99,7 +99,7 @@ test('malformed pairing requests are BAD_REQUEST', () => {
   assert.equal(parseBody(sb.doPost('not json')).error.code, 'BAD_REQUEST');
   assert.equal(parseBody(sb.doPost('{"v":2,"kind":"pair"}')).error.code, 'BAD_REQUEST');
   assert.equal(parseBody(sb.doPost('{"v":1,"kind":"nope"}')).error.code, 'BAD_REQUEST');
-  assert.equal(sb.props.has('gsmcp.pairing'), false);
+  assert.equal(sb.props.has('asmcp.pairing'), false);
 });
 
 test('admin rejects invalid code formats', () => {

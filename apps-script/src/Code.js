@@ -33,7 +33,7 @@ function doGet(e) {
       'Hãy mở trang này khi đã đăng nhập bằng tài khoản Google sở hữu script.</p>');
   }
   return adminPage_()
-    .setTitle('gsheets-mcp - Quản trị')
+    .setTitle('apps-script-mcp - Quản trị')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -74,7 +74,9 @@ function admin_getState() {
     instanceLabel: pairing ? pairing.instanceLabel : null,
     pairedAt: pairing ? pairing.pairedAt : null,
     pendingExpiresAt: pending && pending.expiresAt > now ? pending.expiresAt : null,
-    spreadsheets: getAllowlist_()
+    spreadsheets: getAllowlist_(),
+    evalEnabled: isEvalEnabled_(),
+    evalChangedAt: getEvalConfig_().changedAt
   };
 }
 
@@ -153,6 +155,23 @@ function admin_removeSpreadsheet(id) {
     saveAllowlist_(next);
     return { ok: true, spreadsheets: next };
   });
+}
+
+/** Turns script evaluation (DESIGN.md section 8) on or off. Only the owner can; the MCP server cannot. */
+function admin_setEvalEnabled(enabled) {
+  assertOwner_();
+  if (typeof enabled !== 'boolean') throw new Error('Giá trị bật/tắt phải là true hoặc false.');
+  return withLock_(function () {
+    var config = { enabled: enabled, changedAt: new Date(Date.now()).toISOString() };
+    writeJson_(STORE_EVAL_KEY_, config);
+    return { ok: true, evalEnabled: config.enabled, evalChangedAt: config.changedAt };
+  });
+}
+
+/** The last 50 script.eval runs, newest first: {at, codeSha256, ok, durationMs, errorName?}. Never code. */
+function admin_getEvalAudit() {
+  assertOwner_();
+  return getEvalAudit_().slice().reverse();
 }
 
 // ---------- admin helpers ----------

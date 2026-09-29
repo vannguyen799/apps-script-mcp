@@ -89,7 +89,7 @@ describe("AppsScriptClient response verification", () => {
   it("returns data for a correctly signed response", async () => {
     const s = fakeScript("good");
     const r = await new AppsScriptGateway(client(s.fetchImpl)).ping();
-    expect(r).toEqual({ account: "me@example.com", backendVersion: "3", spreadsheetCount: 2 });
+    expect(r).toEqual({ account: "me@example.com", backendVersion: "3", spreadsheetCount: 2, evalEnabled: null });
     expect(JSON.parse(s.seen[0]!.payload as string)).toEqual({ action: "ping", params: {} });
   });
 

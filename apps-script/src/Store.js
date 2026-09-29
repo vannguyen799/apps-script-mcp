@@ -1,12 +1,12 @@
 /**
  * Store.js - persistence in ScriptProperties.
- * Keys (DESIGN.md section 5.2): gsmcp.pairing, gsmcp.pairing.pending, gsmcp.spreadsheets (JSON).
+ * Keys (DESIGN.md section 5.2): asmcp.pairing, asmcp.pairing.pending, asmcp.spreadsheets (JSON).
  * The pairing record holds the HMAC secret: it must never be returned to the admin page or logged.
  */
 
-var STORE_PAIRING_KEY_ = 'gsmcp.pairing';
-var STORE_PENDING_KEY_ = 'gsmcp.pairing.pending';
-var STORE_SHEETS_KEY_ = 'gsmcp.spreadsheets';
+var STORE_PAIRING_KEY_ = 'asmcp.pairing';
+var STORE_PENDING_KEY_ = 'asmcp.pairing.pending';
+var STORE_SHEETS_KEY_ = 'asmcp.spreadsheets';
 var STORE_MAX_VALUE_CHARS_ = 9000; // ScriptProperties limit is 9 KB per value
 
 function readJson_(key) {

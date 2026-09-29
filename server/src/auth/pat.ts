@@ -3,7 +3,7 @@ import { randomB64Url, sha256Hex } from "../util/crypto.js";
 import type { StateStore, StoredPat } from "../store/state-store.js";
 import { isSupportedScope } from "./scopes.js";
 
-export const PAT_PREFIX = "gsmcp_pat_";
+export const PAT_PREFIX = "asmcp_pat_";
 const LAST_USED_PERSIST_MS = 60_000;
 
 export interface PatView {
@@ -28,7 +28,7 @@ export class PatService {
     const clean = typeof label === "string" ? label.trim().slice(0, 64) : "";
     if (!clean) throw new Error("Label is required.");
     if (!Array.isArray(scopes) || scopes.length === 0 || !scopes.every((s) => typeof s === "string" && isSupportedScope(s))) {
-      throw new Error("Scopes must be a non-empty subset of sheets.read, sheets.write.");
+      throw new Error("Scopes must be a non-empty subset of sheets.read, sheets.write, script.eval.");
     }
     const token = PAT_PREFIX + randomB64Url(32);
     const rec: StoredPat = {

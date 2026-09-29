@@ -15,25 +15,32 @@ import type {
   WriteResult,
 } from "../../core/sheets/gateway.js";
 import { GatewayError } from "../../core/sheets/gateway.js";
+import type { EvalResult, ScriptEvaluator } from "../../core/script/evaluator.js";
+import { EVAL_MAX_CODE_CHARS, EVAL_TIMEOUT_MS } from "../../core/script/evaluator.js";
 import type { Logger } from "../../log.js";
 import { nullLogger } from "../../log.js";
 
 /** Minimal surface of the signed client, so tests can substitute it. */
 export interface CallClient {
-  call(action: string, params?: Record<string, unknown>): Promise<unknown>;
+  call(action: string, params?: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<unknown>;
 }
 
-/** Adapter: SheetsGateway over the Apps Script wire protocol (DESIGN.md 4.5 action names). */
-export class AppsScriptGateway implements SheetsGateway {
+/** Adapter: SheetsGateway and ScriptEvaluator over the Apps Script wire protocol (DESIGN.md 4.5 and 8 action names). */
+export class AppsScriptGateway implements SheetsGateway, ScriptEvaluator {
   constructor(
     private readonly client: CallClient,
     private readonly log: Logger = nullLogger,
   ) {}
 
-  private async run<T>(action: string, params: Record<string, unknown>, meta: { spreadsheetId?: string; cellCount?: number } = {}): Promise<T> {
+  private async run<T>(
+    action: string,
+    params: Record<string, unknown>,
+    meta: { spreadsheetId?: string; cellCount?: number } = {},
+    opts: { timeoutMs?: number } = {},
+  ): Promise<T> {
     const t0 = Date.now();
     try {
-      const r = (await this.client.call(action, params)) as T;
+      const r = (await this.client.call(action, params, opts)) as T;
       this.log.info("sheets_action", { action, spreadsheetId: meta.spreadsheetId, cellCount: meta.cellCount, durationMs: Date.now() - t0, resultCode: "OK" });
       return r;
     } catch (e) {
@@ -48,12 +55,13 @@ export class AppsScriptGateway implements SheetsGateway {
   }
 
   async ping(): Promise<PingResult> {
-    const r = await this.run<{ account?: string; scriptVersion?: string | number; spreadsheetCount?: number }>("ping", {});
+    const r = await this.run<{ account?: string; scriptVersion?: string | number; spreadsheetCount?: number; evalEnabled?: unknown }>("ping", {});
     if (typeof r?.account !== "string") throw new GatewayError("INTERNAL", "Unexpected ping result.");
     return {
       account: r.account,
       backendVersion: r.scriptVersion === undefined ? null : String(r.scriptVersion),
       spreadsheetCount: Number(r.spreadsheetCount ?? 0),
+      evalEnabled: typeof r.evalEnabled === "boolean" ? r.evalEnabled : null,
     };
   }
 
@@ -114,5 +122,21 @@ export class AppsScriptGateway implements SheetsGateway {
       { spreadsheetId: req.spreadsheetId, operations: req.operations, allowFormulas: req.allowFormulas },
       { spreadsheetId: req.spreadsheetId },
     );
+  }
+
+  async evaluate(code: string, args?: unknown): Promise<EvalResult> {
+    if (code.length > EVAL_MAX_CODE_CHARS) throw new GatewayError("LIMIT_EXCEEDED", `code exceeds ${EVAL_MAX_CODE_CHARS} characters`);
+    const r = await this.run<{ value?: unknown; logs?: unknown; durationMs?: unknown }>(
+      "script.eval",
+      { code, ...(args !== undefined ? { args } : {}) },
+      {},
+      { timeoutMs: EVAL_TIMEOUT_MS },
+    );
+    if (!r || typeof r !== "object" || !Array.isArray(r.logs)) throw new GatewayError("INTERNAL", "Unexpected script.eval result.");
+    return {
+      value: r.value === undefined ? null : r.value,
+      logs: r.logs.map((l) => String(l)),
+      durationMs: Number(r.durationMs ?? 0),
+    };
   }
 }

@@ -11,7 +11,7 @@ import { StateStore } from "../src/store/state-store.js";
 let dir: string;
 let store: StateStore;
 beforeEach(async () => {
-  dir = await mkdtemp(path.join(os.tmpdir(), "gsmcp-conn-"));
+  dir = await mkdtemp(path.join(os.tmpdir(), "asmcp-conn-"));
   store = new StateStore(dir);
   await store.load();
 });

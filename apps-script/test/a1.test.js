@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { createSandbox } = require('./harness');
 
 const { ctx } = createSandbox();
-const code = (fn) => { try { fn(); } catch (e) { return e.gsmcpCode; } return null; };
+const code = (fn) => { try { fn(); } catch (e) { return e.asmcpCode; } return null; };
 
 test('column letter <-> number', () => {
   assert.equal(ctx.colToNum_('A'), 1);

@@ -54,7 +54,7 @@ describe("first-run setup", () => {
     expect(ok.status).toBe(200);
     expect(ok.json.csrfToken).toBeTruthy();
     const setCookie = ok.headers.get("set-cookie")!;
-    expect(setCookie).toMatch(/^gsmcp_admin=/);
+    expect(setCookie).toMatch(/^asmcp_admin=/);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
     expect(setCookie).toContain("Path=/");
@@ -114,7 +114,7 @@ describe("admin API security", () => {
     expect((await call("POST", "/api/pats", { cookie, body, csrf: "wrong" })).status).toBe(403);
     const ok = await call("POST", "/api/pats", { cookie, body, csrf });
     expect(ok.status).toBe(201);
-    expect(ok.json.token).toMatch(/^gsmcp_pat_/);
+    expect(ok.json.token).toMatch(/^asmcp_pat_/);
     // GET does not need it
     expect((await call("GET", "/api/pats", { cookie })).json.pats).toHaveLength(1);
     // DELETE does
@@ -126,8 +126,8 @@ describe("admin API security", () => {
   it("the PAT list never returns the token again", async () => {
     await call("POST", "/api/pats", { cookie, csrf, body: { label: "x", scopes: ["sheets.read"] } });
     const list = await call("GET", "/api/pats", { cookie });
-    expect(JSON.stringify(list.json)).not.toMatch(/gsmcp_pat_[A-Za-z0-9_-]{8,}/);
-    expect(list.json.pats[0].hint).toMatch(/^gsmcp_pat_/);
+    expect(JSON.stringify(list.json)).not.toMatch(/asmcp_pat_[A-Za-z0-9_-]{8,}/);
+    expect(list.json.pats[0].hint).toMatch(/^asmcp_pat_/);
     expect(Object.keys(list.json.pats[0])).not.toContain("token");
   });
 

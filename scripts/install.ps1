@@ -1,8 +1,8 @@
-# gsheets-mcp installer for Windows (Docker Desktop).
-# Usage (PowerShell):  irm https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.ps1 | iex
+# apps-script-mcp installer for Windows (Docker Desktop).
+# Usage (PowerShell):  irm https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
-$Image = if ($env:GSMCP_IMAGE) { $env:GSMCP_IMAGE } else { 'ghcr.io/vannguyen799/gsheets-mcp:edge' }
-$Name = 'gsheets-mcp'
+$Image = if ($env:ASMCP_IMAGE) { $env:ASMCP_IMAGE } else { 'ghcr.io/vannguyen799/apps-script-mcp:edge' }
+$Name = 'apps-script-mcp'
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
   Write-Host 'Chua co Docker. Cai Docker Desktop: https://www.docker.com/products/docker-desktop/' -ForegroundColor Red
@@ -18,7 +18,7 @@ docker pull $Image | Out-Null
 docker rm -f $Name *> $null
 docker run -d --name $Name --restart unless-stopped `
   -p 8787:8787 -p 127.0.0.1:8788:8788 `
-  -v gsmcp-data:/data $Image | Out-Null
+  -v asmcp-data:/data $Image | Out-Null
 
 Write-Host 'Dang khoi dong ...'
 for ($i = 0; $i -lt 30; $i++) {

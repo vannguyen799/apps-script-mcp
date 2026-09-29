@@ -26,11 +26,11 @@ async function main(): Promise<void> {
   const baseUrl = new PublicBaseUrl(config.publicBaseUrl, store);
   const provider = new GsmcpOAuthProvider({ store, admin, limiter, pats, baseUrl: () => baseUrl.get(), logger: log });
 
-  const connection = new ConnectionManager({ store, logger: log, instanceLabel: `gsheets-mcp@${hostname()}` });
+  const connection = new ConnectionManager({ store, logger: log, instanceLabel: `apps-script-mcp@${hostname()}` });
   const service = new SheetsService(connection.gateway);
   connection.onChange(() => service.invalidate());
 
-  const publicApp = createPublicApp({ provider, baseUrl, service, trustProxy: config.trustProxy, logger: log });
+  const publicApp = createPublicApp({ provider, baseUrl, service, evaluator: connection.evaluator, trustProxy: config.trustProxy, logger: log });
   const adminApp = createAdminApp({
     auth: admin,
     limiter,

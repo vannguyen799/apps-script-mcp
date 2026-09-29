@@ -1,9 +1,9 @@
 #!/bin/sh
-# gsheets-mcp installer for macOS / Linux.
-# Usage:  curl -fsSL https://raw.githubusercontent.com/vannguyen799/gsheets-mcp/main/scripts/install.sh | sh
+# apps-script-mcp installer for macOS / Linux.
+# Usage:  curl -fsSL https://raw.githubusercontent.com/vannguyen799/apps-script-mcp/main/scripts/install.sh | sh
 set -eu
-IMAGE="${GSMCP_IMAGE:-ghcr.io/vannguyen799/gsheets-mcp:edge}"
-NAME=gsheets-mcp
+IMAGE="${ASMCP_IMAGE:-ghcr.io/vannguyen799/apps-script-mcp:edge}"
+NAME=apps-script-mcp
 
 command -v docker >/dev/null 2>&1 || { echo "Docker is not installed: https://docs.docker.com/get-docker/"; exit 1; }
 docker info >/dev/null 2>&1 || { echo "Docker is not running. Start Docker and run this again."; exit 1; }
@@ -13,7 +13,7 @@ docker pull -q "$IMAGE" >/dev/null
 # Re-running upgrades in place: the named volume keeps pairing, password and tokens.
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --restart unless-stopped \
-  -p 8787:8787 -p 127.0.0.1:8788:8788 -v gsmcp-data:/data "$IMAGE" >/dev/null
+  -p 8787:8787 -p 127.0.0.1:8788:8788 -v asmcp-data:/data "$IMAGE" >/dev/null
 
 i=0
 until curl -fsS http://localhost:8787/healthz >/dev/null 2>&1 || [ $i -ge 30 ]; do i=$((i+1)); sleep 1; done
